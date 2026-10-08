@@ -96,35 +96,50 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
         s_connected = event->connect.status == 0;
-        s_authenticated = false;
-        s_passkey = UINT32_MAX;
+        // On a bonded reconnect ENC_CHANGE can arrive before CONNECT. Preserve
+        // the authenticated result in that ordering; disconnect/failure clears it.
+        if (!s_connected) s_authenticated = false;
+        if (!s_connected) s_passkey = UINT32_MAX;
         s_rx_expected = 0;
-        if (!s_connected) advertise();
+        ESP_LOGI(TAG, "connection %s, status=0x%x, authenticated=%d",
+                 s_connected ? "established" : "failed", event->connect.status,
+                 s_authenticated ? 1 : 0);
+        // ESP-IDF NimBLE automatically restarts legacy advertising after the
+        // controller's 0x3e establishment failure. Starting it again from an
+        // ADV_COMPLETE callback races that recovery and can leave BLE idle.
+        if (!s_connected && !ble_gap_adv_active()) advertise();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        ESP_LOGI(TAG, "disconnected, reason=0x%x", event->disconnect.reason);
         s_connected = false;
         s_authenticated = false;
         memset(s_rx, 0, sizeof(s_rx));
         s_passkey = UINT32_MAX;
         s_rx_expected = 0;
-        advertise();
+        if (!ble_gap_adv_active()) advertise();
         break;
     case BLE_GAP_EVENT_ADV_COMPLETE:
-        advertise();
+        ESP_LOGI(TAG, "advertising completed, reason=0x%x", event->adv_complete.reason);
+        // Do not immediately restart here: NimBLE performs its own advertising
+        // recovery for 0x3e connection-establishment failures.
         break;
     case BLE_GAP_EVENT_PASSKEY_ACTION:
         if (event->passkey.params.action == BLE_SM_IOACT_DISP) {
             uint32_t code = esp_random() % 1000000;
             struct ble_sm_io io = { .action = BLE_SM_IOACT_DISP, .passkey = code };
             s_passkey = code;
+            ESP_LOGI(TAG, "displaying passkey on device screen");
             ble_sm_inject_io(event->passkey.conn_handle, &io);
         }
         break;
     case BLE_GAP_EVENT_ENC_CHANGE: {
         struct ble_gap_conn_desc desc;
-        s_authenticated = event->enc_change.status == 0 &&
-            ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0 &&
-            desc.sec_state.encrypted && desc.sec_state.authenticated;
+        bool have_desc = ble_gap_conn_find(event->enc_change.conn_handle, &desc) == 0;
+        bool encrypted = have_desc && desc.sec_state.encrypted;
+        bool authenticated = have_desc && desc.sec_state.authenticated;
+        s_authenticated = event->enc_change.status == 0 && encrypted && authenticated;
+        ESP_LOGI(TAG, "security change status=0x%x encrypted=%d authenticated=%d",
+                 event->enc_change.status, encrypted ? 1 : 0, authenticated ? 1 : 0);
         s_passkey = UINT32_MAX;
         break;
     }
