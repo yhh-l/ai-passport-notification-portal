@@ -13,7 +13,7 @@ final class PassportBleTest: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private var holdSeconds: TimeInterval = 0
     private var writeCompleted = false
 
-    func run(message: String, holdSeconds: TimeInterval) {
+    func run(message: String, messageType: UInt8, holdSeconds: TimeInterval) {
         self.holdSeconds = max(0, holdSeconds)
         var body = Data()
         for character in message {
@@ -22,7 +22,7 @@ final class PassportBleTest: NSObject, CBCentralManagerDelegate, CBPeripheralDel
             body.append(bytes)
         }
         guard !body.isEmpty else { finish("测试文本为空", code: 2) }
-        packet = Data([0xA5, 0x03, UInt8(body.count & 0xff), UInt8((body.count >> 8) & 0xff)])
+        packet = Data([0xA5, messageType, UInt8(body.count & 0xff), UInt8((body.count >> 8) & 0xff)])
         packet.append(body)
         central = CBCentralManager(delegate: self, queue: .main)
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
@@ -133,4 +133,11 @@ final class PassportBleTest: NSObject, CBCentralManagerDelegate, CBPeripheralDel
 let arguments = Array(CommandLine.arguments.dropFirst())
 let message = arguments.first ?? "电脑蓝牙测试 · AI Passport 正常"
 let holdSeconds = arguments.count > 1 ? (TimeInterval(arguments[1]) ?? 0) : 0
-PassportBleTest().run(message: message, holdSeconds: holdSeconds)
+let messageType: UInt8 = arguments.count > 2 ? ({
+    switch arguments[2].lowercased() {
+    case "sms": return 0x01
+    case "app": return 0x02
+    default: return 0x03
+    }
+})() : 0x03
+PassportBleTest().run(message: message, messageType: messageType, holdSeconds: holdSeconds)
