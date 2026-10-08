@@ -147,3 +147,8 @@ void bsp_display_backlight(uint8_t percent) {
     ledc_set_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL, duty);
     ledc_update_duty(BSP_BL_LEDC_MODE, BSP_BL_LEDC_CHANNEL);
 }
+
+esp_err_t bsp_display_set_enabled(bool enabled) {
+    if (!s_panel) return ESP_ERR_INVALID_STATE;
+    return esp_lcd_panel_disp_on_off(s_panel, enabled);
+}

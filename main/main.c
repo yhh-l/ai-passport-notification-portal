@@ -19,6 +19,10 @@
 
 extern const lv_font_t font_chinese_16;
 static const char *TAG = "passport_notify";
+
+#define SCREEN_BRIGHTNESS_PERCENT 85
+#define SCREEN_TIMEOUT_MS 60000
+#define WAKE_INPUT_SUPPRESS_MS (BSP_BTN_LONG_PRESS_MS + 1000)
 static lv_obj_t *s_message_label, *s_link_label, *s_alert_label;
 static lv_obj_t *s_source_label, *s_counter_label, *s_icon_box, *s_icon_label;
 static lv_obj_t *s_card, *s_help_label, *s_toast_box;
@@ -29,6 +33,9 @@ static uint32_t s_last_code = UINT32_MAX;
 static bool s_overlay_active, s_hint_active, s_clear_confirmation;
 static bool s_muted, s_audio_ready, s_nvs_ready;
 static bool s_portal_active, s_portal_selection;
+static bool s_screen_off, s_wake_input_pending;
+static bsp_btn_t s_wake_button;
+static uint32_t s_screen_deadline, s_wake_suppress_until;
 static app_firmware_state_t s_last_firmware_state = APP_FIRMWARE_IDLE;
 static uint8_t s_last_firmware_progress = UINT8_MAX;
 static esp_err_t s_ble_error;
@@ -59,6 +66,42 @@ static lv_obj_t *panel(lv_obj_t *parent, int x, int y, int w, int h,
     lv_obj_set_style_pad_all(object, 0, 0);
     lv_obj_set_scrollable(object, false);
     return object;
+}
+
+static bool deadline_reached(uint32_t now, uint32_t deadline)
+{
+    return (int32_t)(now - deadline) >= 0;
+}
+
+static void screen_mark_activity(void)
+{
+    s_screen_deadline = lv_tick_get() + SCREEN_TIMEOUT_MS;
+}
+
+static void screen_wake(void)
+{
+    screen_mark_activity();
+    if (!s_screen_off) return;
+
+    esp_err_t error = bsp_display_set_enabled(true);
+    if (error != ESP_OK) {
+        ESP_LOGW(TAG, "display wake failed: %s", esp_err_to_name(error));
+    }
+    bsp_display_backlight(SCREEN_BRIGHTNESS_PERCENT);
+    s_screen_off = false;
+}
+
+static void screen_sleep(void)
+{
+    if (s_screen_off) return;
+
+    bsp_display_backlight(0);
+    esp_err_t error = bsp_display_set_enabled(false);
+    if (error != ESP_OK) {
+        ESP_LOGW(TAG, "display sleep failed: %s", esp_err_to_name(error));
+    }
+    s_screen_off = true;
+    s_wake_input_pending = false;
 }
 
 static const char *message_category(uint8_t type)
@@ -247,6 +290,7 @@ static void tick(lv_timer_t *timer)
     uint32_t now = lv_tick_get();
     app_message_t message;
     while (app_ble_receive(&message)) {
+        screen_wake();
         if (message.type == 3) {
             if (!s_portal_active && !app_firmware_busy()) {
                 s_clear_confirmation = false;
@@ -269,6 +313,7 @@ static void tick(lv_timer_t *timer)
     app_firmware_state_t firmware_state = app_firmware_state();
     uint8_t firmware_progress = app_firmware_progress();
     if (firmware_state == APP_FIRMWARE_RECEIVING) {
+        screen_wake();
         if (firmware_state != s_last_firmware_state ||
             firmware_progress != s_last_firmware_progress) {
             cancel_overlay();
@@ -300,6 +345,7 @@ static void tick(lv_timer_t *timer)
     if (code != s_last_code) {
         s_last_code = code;
         if (code != UINT32_MAX) {
+            screen_wake();
             lv_label_set_text_fmt(s_link_label, "配对 %06lu", (unsigned long)code);
         }
     }
@@ -309,6 +355,13 @@ static void tick(lv_timer_t *timer)
                           app_ble_authenticated() ? "安全配对" :
                           app_ble_connected() ? "待配对" :
                           "等待连接");
+    } else {
+        screen_mark_activity();
+    }
+
+    if (!s_screen_off && !app_firmware_busy() && code == UINT32_MAX &&
+        deadline_reached(now, s_screen_deadline)) {
+        screen_sleep();
     }
 }
 
@@ -349,10 +402,39 @@ static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
     (void)user;
     if (!bsp_lvgl_lock(200)) return;
 
+    uint32_t now = lv_tick_get();
+    if (s_screen_off) {
+        screen_wake();
+        if (event == BSP_BTN_PRESS) {
+            s_wake_input_pending = true;
+            s_wake_button = button;
+            s_wake_suppress_until = now + WAKE_INPUT_SUPPRESS_MS;
+        }
+        bsp_lvgl_unlock();
+        return;
+    }
+
+    if (s_wake_input_pending) {
+        if (deadline_reached(now, s_wake_suppress_until)) {
+            s_wake_input_pending = false;
+        } else if (button == s_wake_button) {
+            if (event != BSP_BTN_PRESS) s_wake_input_pending = false;
+            bsp_lvgl_unlock();
+            return;
+        }
+    }
+    screen_mark_activity();
+
     if (app_firmware_busy()) {
         if (event == BSP_BTN_CLICK || event == BSP_BTN_LONG) {
             show_hint("正在安装 · 请勿操作", 1400);
         }
+        bsp_lvgl_unlock();
+        return;
+    }
+
+    if (event == BSP_BTN_DOUBLE && button == BSP_BTN_DOWN) {
+        screen_sleep();
         bsp_lvgl_unlock();
         return;
     }
@@ -477,7 +559,7 @@ static void build_ui(void)
     lv_obj_set_style_text_line_space(s_message_label, 4, 0);
 
     s_help_label = label(screen,
-                         "上/下翻阅 · OK处理 · 双击OK进门户\n长按下键静音 · 长按OK自检",
+                         "上/下翻阅 · OK处理 · 双击OK门户\n双击下键熄屏 · 长按下键静音",
                          8, 278, 224, 40, 0x88A5B8, LV_TEXT_ALIGN_CENTER);
     lv_obj_set_style_text_line_space(s_help_label, 2, 0);
 
@@ -498,7 +580,8 @@ void app_main(void)
         ESP_LOGE(TAG, "display init failed");
         return;
     }
-    bsp_display_backlight(85);
+    bsp_display_backlight(SCREEN_BRIGHTNESS_PERCENT);
+    screen_mark_activity();
 
     esp_err_t nvs_error = nvs_flash_init();
     s_nvs_ready = nvs_error == ESP_OK;

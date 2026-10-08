@@ -20,6 +20,10 @@ esp_lcd_panel_io_handle_t bsp_display_io(void);
 // 背光亮度 0..100(%)。LEDC PWM,0=全灭。
 void bsp_display_backlight(uint8_t percent);
 
+// 打开/关闭面板显示输出。关闭时保留显存；应用仍可保持 BLE 和 UI 任务运行。
+// 调用者负责在关闭前熄灭背光，并在打开后恢复所需亮度。
+esp_err_t bsp_display_set_enabled(bool enabled);
+
 // ---------------------------------------------------------------------------
 // LVGL 接入(可选层)。必须先 bsp_display_init() 成功后再调。
 // 不想用 LVGL 的开发者可忽略本段,直接用 bsp_display_panel() 自己画。
