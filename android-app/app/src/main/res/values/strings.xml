@@ -1,1 +1,6 @@
-<resources><string name="app_name">随身消息通知桥</string><string name="app_entry">%1$s  (%2$s)</string></resources>
+<resources>
+    <string name="app_name">AI Passport 门户</string>
+    <string name="notification_listener_name">AI Passport 通知转发</string>
+    <string name="device_slot_name">设备玩法槽：%1$s</string>
+    <string name="selected_app_count">已选择 %1$d 个应用</string>
+</resources>

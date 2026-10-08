@@ -1,11 +1,15 @@
-// AI Passport: a private Android notification display.
+// AI Passport: private Android notifications and a persistent firmware portal.
 #include "app_alert.h"
 #include "app_ble.h"
+#include "app_firmware.h"
 #include "bsp_audio.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
 #include "bsp_i2c.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "lvgl.h"
 #include "message_store.h"
 #include "nvs.h"
@@ -24,34 +28,37 @@ static uint32_t s_overlay_until, s_hint_until;
 static uint32_t s_last_code = UINT32_MAX;
 static bool s_overlay_active, s_hint_active, s_clear_confirmation;
 static bool s_muted, s_audio_ready, s_nvs_ready;
+static bool s_portal_active, s_portal_selection;
+static app_firmware_state_t s_last_firmware_state = APP_FIRMWARE_IDLE;
+static uint8_t s_last_firmware_progress = UINT8_MAX;
 static esp_err_t s_ble_error;
 
 static lv_obj_t *label(lv_obj_t *parent, const char *text, int x, int y,
                        int w, int h, uint32_t color, lv_text_align_t align)
 {
-    lv_obj_t *obj = lv_label_create(parent);
-    lv_label_set_text(obj, text);
-    lv_label_set_long_mode(obj, LV_LABEL_LONG_WRAP);
-    lv_obj_set_pos(obj, x, y);
-    lv_obj_set_size(obj, w, h);
-    lv_obj_set_style_text_font(obj, &font_chinese_16, 0);
-    lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
-    lv_obj_set_style_text_align(obj, align, 0);
-    return obj;
+    lv_obj_t *object = lv_label_create(parent);
+    lv_label_set_text(object, text);
+    lv_label_set_long_mode(object, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(object, x, y);
+    lv_obj_set_size(object, w, h);
+    lv_obj_set_style_text_font(object, &font_chinese_16, 0);
+    lv_obj_set_style_text_color(object, lv_color_hex(color), 0);
+    lv_obj_set_style_text_align(object, align, 0);
+    return object;
 }
 
 static lv_obj_t *panel(lv_obj_t *parent, int x, int y, int w, int h,
                        int radius, uint32_t color)
 {
-    lv_obj_t *obj = lv_obj_create(parent);
-    lv_obj_set_pos(obj, x, y);
-    lv_obj_set_size(obj, w, h);
-    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
-    lv_obj_set_style_radius(obj, radius, 0);
-    lv_obj_set_style_border_width(obj, 0, 0);
-    lv_obj_set_style_pad_all(obj, 0, 0);
-    lv_obj_set_scrollable(obj, false);
-    return obj;
+    lv_obj_t *object = lv_obj_create(parent);
+    lv_obj_set_pos(object, x, y);
+    lv_obj_set_size(object, w, h);
+    lv_obj_set_style_bg_color(object, lv_color_hex(color), 0);
+    lv_obj_set_style_radius(object, radius, 0);
+    lv_obj_set_style_border_width(object, 0, 0);
+    lv_obj_set_style_pad_all(object, 0, 0);
+    lv_obj_set_scrollable(object, false);
+    return object;
 }
 
 static const char *message_category(uint8_t type)
@@ -84,8 +91,6 @@ static void set_source_badge(uint8_t type, const char *source)
 
 static void set_content_mode(bool has_content)
 {
-    // Keep guidance out of the reading view. When a message or modal is shown,
-    // reclaim the footer area for notification text.
     lv_obj_set_height(s_card, has_content ? 274 : 236);
     lv_obj_set_height(s_message_label, has_content ? 192 : 154);
     lv_obj_set_hidden(s_help_label, has_content);
@@ -110,10 +115,10 @@ static void show_current_message(void)
     const char *newline = strchr(message->text, '\n');
     char source[64];
     if (newline) {
-        size_t source_len = (size_t)(newline - message->text);
-        if (source_len >= sizeof(source)) source_len = sizeof(source) - 1;
-        memcpy(source, message->text, source_len);
-        source[source_len] = '\0';
+        size_t source_length = (size_t)(newline - message->text);
+        if (source_length >= sizeof(source)) source_length = sizeof(source) - 1;
+        memcpy(source, message->text, source_length);
+        source[source_length] = '\0';
         body = newline + 1;
     } else {
         snprintf(source, sizeof(source), "%s", message_category(message->type));
@@ -128,6 +133,51 @@ static void show_current_message(void)
     lv_label_set_text(s_counter_label, counter);
     lv_label_set_text(s_message_label, body);
     set_source_badge(message->type, source);
+}
+
+static void show_portal(void)
+{
+    set_content_mode(true);
+    lv_label_set_text(s_source_label, "玩法门户");
+    lv_label_set_text(s_icon_label, s_portal_selection ? "玩" : "门");
+    lv_obj_set_style_bg_color(s_icon_box,
+                              lv_color_hex(s_portal_selection ? 0x7C5CE0 : 0x1F9D8A), 0);
+    lv_label_set_text(s_counter_label, s_portal_selection ? "2/2" : "1/2");
+
+    if (!s_portal_selection) {
+        lv_label_set_text(s_message_label,
+                          "随身消息\n当前常驻门户\n\n上/下：切换玩法\nOK：返回消息");
+        return;
+    }
+
+    if (app_firmware_slot_present()) {
+        char text[240];
+        snprintf(text, sizeof(text), "%s\n已安装到设备玩法槽\n\n长按 OK 3 秒启动\n重启后返回门户",
+                 app_firmware_slot_name());
+        lv_label_set_text(s_message_label, text);
+    } else {
+        lv_label_set_text(s_message_label,
+                          "自定义玩法槽\n当前为空\n\n请在手机门户中\n导入并安装 .bin 固件");
+    }
+}
+
+static void show_firmware_transfer(uint8_t progress)
+{
+    set_content_mode(true);
+    lv_label_set_text(s_source_label, "正在安装玩法");
+    lv_label_set_text(s_icon_label, "装");
+    lv_obj_set_style_bg_color(s_icon_box, lv_color_hex(0x3370FF), 0);
+    lv_label_set_text_fmt(s_counter_label, "%u%%", (unsigned)progress);
+    lv_label_set_text_fmt(s_message_label,
+                          "%s\n\n正在通过安全蓝牙写入\n请保持手机靠近设备\n不要关闭应用或断电",
+                          app_firmware_slot_name());
+}
+
+static void restore_primary_view(void)
+{
+    if (app_firmware_busy()) show_firmware_transfer(app_firmware_progress());
+    else if (s_portal_active) show_portal();
+    else show_current_message();
 }
 
 static void show_overlay(const char *category, const char *text, uint32_t duration_ms)
@@ -188,7 +238,7 @@ static void cancel_clear_confirmation(void)
 {
     s_clear_confirmation = false;
     cancel_overlay();
-    show_current_message();
+    restore_primary_view();
 }
 
 static void tick(lv_timer_t *timer)
@@ -197,32 +247,48 @@ static void tick(lv_timer_t *timer)
     uint32_t now = lv_tick_get();
     app_message_t message;
     while (app_ble_receive(&message)) {
-        // Connection state is transient UI, not an inbox item. This prevents
-        // reconnects from displacing real phone notifications.
         if (message.type == 3) {
-            s_clear_confirmation = false;
-            show_overlay("连接提示", message.text, 3500);
+            if (!s_portal_active && !app_firmware_busy()) {
+                s_clear_confirmation = false;
+                show_overlay("连接提示", message.text, 3500);
+            }
             continue;
         }
 
-        // Sensitive messages remain only in this bounded RAM history. They are
-        // never logged or persisted, and are removed only by explicit controls.
         bool dropped_oldest = message_store_push(&s_messages, &message);
         s_clear_confirmation = false;
-        cancel_overlay();
-        show_current_message();
-        if (dropped_oldest) {
-            show_hint("消息已满 · 已移除最早一条", 2200);
-        } else {
-            show_hint("收到新消息", 1200);
+        if (!s_portal_active && !app_firmware_busy()) {
+            cancel_overlay();
+            show_current_message();
         }
+        show_hint(dropped_oldest ? "消息已满 · 已移除最早一条" : "收到新消息",
+                  dropped_oldest ? 2200 : 1200);
         if (s_audio_ready && !s_muted) app_alert_play();
     }
+
+    app_firmware_state_t firmware_state = app_firmware_state();
+    uint8_t firmware_progress = app_firmware_progress();
+    if (firmware_state == APP_FIRMWARE_RECEIVING) {
+        if (firmware_state != s_last_firmware_state ||
+            firmware_progress != s_last_firmware_progress) {
+            cancel_overlay();
+            show_firmware_transfer(firmware_progress);
+        }
+    } else if (s_last_firmware_state == APP_FIRMWARE_RECEIVING) {
+        s_portal_active = true;
+        s_portal_selection = true;
+        cancel_overlay();
+        show_portal();
+        show_hint(firmware_state == APP_FIRMWARE_READY ?
+                  "玩法安装完成" : "安装失败 · 请在手机重试", 2600);
+    }
+    s_last_firmware_state = firmware_state;
+    s_last_firmware_progress = firmware_progress;
 
     if (s_overlay_active && (int32_t)(now - s_overlay_until) >= 0) {
         s_clear_confirmation = false;
         cancel_overlay();
-        show_current_message();
+        restore_primary_view();
     }
     if (s_hint_active && (int32_t)(now - s_hint_until) >= 0) {
         s_hint_active = false;
@@ -234,26 +300,92 @@ static void tick(lv_timer_t *timer)
     if (code != s_last_code) {
         s_last_code = code;
         if (code != UINT32_MAX) {
-            lv_label_set_text_fmt(s_link_label, "配对 %06lu",
-                                  (unsigned long)code);
+            lv_label_set_text_fmt(s_link_label, "配对 %06lu", (unsigned long)code);
         }
     }
     if (code == UINT32_MAX) {
-        lv_label_set_text(s_link_label, s_ble_error != ESP_OK ? "蓝牙失败" :
+        lv_label_set_text(s_link_label,
+                          s_ble_error != ESP_OK ? "蓝牙失败" :
                           app_ble_authenticated() ? "安全配对" :
                           app_ble_connected() ? "待配对" :
                           "等待连接");
     }
 }
 
-static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
+static void restart_into_user_firmware(void *argument)
+{
+    (void)argument;
+    vTaskDelay(pdMS_TO_TICKS(650));
+    esp_restart();
+}
+
+static void launch_selected_firmware(void)
+{
+    if (!s_portal_selection) {
+        s_portal_active = false;
+        show_current_message();
+        show_hint("已在随身消息门户", 1400);
+        return;
+    }
+    if (!app_firmware_slot_present()) {
+        show_hint("玩法槽为空 · 请先用手机安装", 2200);
+        return;
+    }
+    esp_err_t error = app_firmware_prepare_boot();
+    if (error != ESP_OK) {
+        ESP_LOGE(TAG, "prepare firmware boot failed: %s", esp_err_to_name(error));
+        show_hint("玩法启动失败", 1800);
+        return;
+    }
+    show_overlay("玩法门户", "正在启动自定义玩法…\n重新开机可返回门户", 10000);
+    if (xTaskCreate(restart_into_user_firmware, "launch_fw", 2048, NULL, 5, NULL) != pdPASS) {
+        ESP_LOGE(TAG, "failed to create firmware restart task");
+        esp_restart();
+    }
+}
+
+static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
 {
     (void)user;
     if (!bsp_lvgl_lock(200)) return;
 
-    if (ev == BSP_BTN_CLICK) {
+    if (app_firmware_busy()) {
+        if (event == BSP_BTN_CLICK || event == BSP_BTN_LONG) {
+            show_hint("正在安装 · 请勿操作", 1400);
+        }
+        bsp_lvgl_unlock();
+        return;
+    }
+
+    if (event == BSP_BTN_DOUBLE && button == BSP_BTN_OK) {
+        s_clear_confirmation = false;
+        cancel_overlay();
+        s_portal_active = !s_portal_active;
+        if (s_portal_active) show_portal();
+        else show_current_message();
+        bsp_lvgl_unlock();
+        return;
+    }
+
+    if (s_portal_active) {
+        if (event == BSP_BTN_CLICK) {
+            if (button == BSP_BTN_UP || button == BSP_BTN_DOWN) {
+                s_portal_selection = !s_portal_selection;
+                show_portal();
+            } else if (button == BSP_BTN_OK) {
+                s_portal_active = false;
+                show_current_message();
+            }
+        } else if (event == BSP_BTN_LONG && button == BSP_BTN_OK) {
+            launch_selected_firmware();
+        }
+        bsp_lvgl_unlock();
+        return;
+    }
+
+    if (event == BSP_BTN_CLICK) {
         if (s_clear_confirmation) {
-            if (btn == BSP_BTN_OK) {
+            if (button == BSP_BTN_OK) {
                 s_clear_confirmation = false;
                 message_store_clear(&s_messages);
                 show_overlay("消息管理", "全部消息已清空", 1800);
@@ -266,15 +398,15 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
         }
 
         cancel_overlay();
-        if (btn == BSP_BTN_UP) {
+        if (button == BSP_BTN_UP) {
             if (message_store_count(&s_messages) == 0) show_hint("暂无消息", 1200);
             else if (!message_store_previous(&s_messages)) show_hint("已经是第一条", 1200);
             show_current_message();
-        } else if (btn == BSP_BTN_DOWN) {
+        } else if (button == BSP_BTN_DOWN) {
             if (message_store_count(&s_messages) == 0) show_hint("暂无消息", 1200);
             else if (!message_store_next(&s_messages)) show_hint("已经是最新一条", 1200);
             show_current_message();
-        } else if (btn == BSP_BTN_OK) {
+        } else if (button == BSP_BTN_OK) {
             if (message_store_dismiss_current(&s_messages)) {
                 show_current_message();
                 char hint[40];
@@ -285,25 +417,26 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
                 show_hint("暂无可处理消息", 1200);
             }
         }
-    } else if (ev == BSP_BTN_LONG) {
-        if (btn == BSP_BTN_UP) {
+    } else if (event == BSP_BTN_LONG) {
+        if (button == BSP_BTN_UP) {
             if (message_store_count(&s_messages) == 0) {
                 show_hint("暂无消息", 1200);
             } else {
                 s_clear_confirmation = true;
                 show_overlay("确认清空全部？", "短按 OK：确认清空\n按上/下键：取消", 6000);
             }
-        } else if (btn == BSP_BTN_DOWN) {
+        } else if (button == BSP_BTN_DOWN) {
             if (s_clear_confirmation) cancel_clear_confirmation();
             s_muted = !s_muted;
             app_alert_set_enabled(!s_muted);
             save_muted_preference();
             update_audio_status();
             show_hint(s_muted ? "已静音" : "提示音已恢复", 1200);
-        } else if (btn == BSP_BTN_OK) {
+        } else if (button == BSP_BTN_OK) {
             s_clear_confirmation = false;
             show_overlay("设备自检",
-                         s_muted ? "屏幕与按键正常 · 当前静音" : "屏幕、按键与提示音正常",
+                         s_muted ? "屏幕与按键正常 · 当前静音" :
+                                   "屏幕、按键与提示音正常",
                          5000);
             if (s_audio_ready && !s_muted) app_alert_play();
         }
@@ -314,21 +447,21 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
 
 static void build_ui(void)
 {
-    lv_obj_t *scr = lv_obj_create(NULL);
-    lv_obj_set_style_bg_color(scr, lv_color_hex(0x0B1219), 0);
-    lv_obj_set_style_border_width(scr, 0, 0);
-    lv_obj_set_style_pad_all(scr, 0, 0);
-    lv_obj_set_scrollable(scr, false);
+    lv_obj_t *screen = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x0B1219), 0);
+    lv_obj_set_style_border_width(screen, 0, 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_set_scrollable(screen, false);
 
-    label(scr, "随身消息", 10, 7, 82, 24, 0xF3F6FA, LV_TEXT_ALIGN_LEFT);
-    s_link_label = label(scr, "等待连接", 92, 7, 104, 24,
+    label(screen, "随身消息", 10, 7, 82, 24, 0xF3F6FA, LV_TEXT_ALIGN_LEFT);
+    s_link_label = label(screen, "等待连接", 92, 7, 104, 24,
                          0x7EB8E0, LV_TEXT_ALIGN_RIGHT);
-    s_audio_icon_box = panel(scr, 202, 4, 28, 28, 14, 0x1F9D8A);
+    s_audio_icon_box = panel(screen, 202, 4, 28, 28, 14, 0x1F9D8A);
     s_audio_icon_label = label(s_audio_icon_box, LV_SYMBOL_VOLUME_MAX,
                                0, 5, 28, 18, 0xFFFFFF, LV_TEXT_ALIGN_CENTER);
     lv_obj_set_style_text_font(s_audio_icon_label, LV_FONT_DEFAULT, 0);
 
-    s_card = panel(scr, 8, 38, 224, 236, 14, 0x182531);
+    s_card = panel(screen, 8, 38, 224, 236, 14, 0x182531);
     s_icon_box = panel(s_card, 12, 12, 38, 38, 10, 0x31506A);
     s_icon_label = label(s_icon_box, "等", 0, 8, 38, 22, 0xFFFFFF,
                          LV_TEXT_ALIGN_CENTER);
@@ -343,17 +476,17 @@ static void build_ui(void)
                             12, 70, 200, 154, 0xFFFFFF, LV_TEXT_ALIGN_LEFT);
     lv_obj_set_style_text_line_space(s_message_label, 4, 0);
 
-    s_help_label = label(scr,
-                         "上/下翻阅 · OK处理\n长按下键静音 · 长按OK自检",
-                         8, 281, 224, 36, 0x88A5B8, LV_TEXT_ALIGN_CENTER);
+    s_help_label = label(screen,
+                         "上/下翻阅 · OK处理 · 双击OK进门户\n长按下键静音 · 长按OK自检",
+                         8, 278, 224, 40, 0x88A5B8, LV_TEXT_ALIGN_CENTER);
     lv_obj_set_style_text_line_space(s_help_label, 2, 0);
 
-    s_toast_box = panel(scr, 18, 280, 204, 30, 15, 0x263A49);
+    s_toast_box = panel(screen, 18, 280, 204, 30, 15, 0x263A49);
     s_alert_label = label(s_toast_box, "", 6, 5, 192, 20, 0xF3F6FA,
                           LV_TEXT_ALIGN_CENTER);
     lv_obj_set_hidden(s_toast_box, true);
     update_audio_status();
-    lv_screen_load(scr);
+    lv_screen_load(screen);
     lv_timer_create(tick, 200, NULL);
 }
 
@@ -366,12 +499,14 @@ void app_main(void)
         return;
     }
     bsp_display_backlight(85);
-    // BLE bonding and the non-sensitive mute preference need NVS. Do not erase
-    // any existing device data if NVS initialization fails.
+
     esp_err_t nvs_error = nvs_flash_init();
     s_nvs_ready = nvs_error == ESP_OK;
     if (!s_nvs_ready) ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(nvs_error));
     load_preferences();
+    app_firmware_init();
+    s_last_firmware_state = app_firmware_state();
+
     s_audio_ready = bsp_audio_init() == ESP_OK;
     if (s_audio_ready) {
         app_alert_start();
@@ -383,7 +518,9 @@ void app_main(void)
     }
     if (s_nvs_ready) s_ble_error = app_ble_start();
     else s_ble_error = nvs_error;
-    if (s_ble_error != ESP_OK) ESP_LOGE(TAG, "BLE start failed: %s", esp_err_to_name(s_ble_error));
-    esp_err_t err = bsp_button_init(on_key, NULL);
-    if (err != ESP_OK) ESP_LOGE(TAG, "button init failed: %s", esp_err_to_name(err));
+    if (s_ble_error != ESP_OK) {
+        ESP_LOGE(TAG, "BLE start failed: %s", esp_err_to_name(s_ble_error));
+    }
+    esp_err_t error = bsp_button_init(on_key, NULL);
+    if (error != ESP_OK) ESP_LOGE(TAG, "button init failed: %s", esp_err_to_name(error));
 }

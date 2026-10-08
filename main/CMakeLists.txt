@@ -2,6 +2,7 @@ idf_component_register(
     SRCS "main.c"
          "app_ble.c"
          "app_alert.c"
+         "app_firmware.c"
          "message_store.c"
          "fonts/font_chinese_16.c"
          "ui_pixel.c"
@@ -17,5 +18,5 @@ idf_component_register(
          "demo_blufi_security.c"
          "demo_low_power.c"
     INCLUDE_DIRS "."
-    REQUIRES bsp bt esp_event esp_hw_support esp_netif esp_timer esp_wifi mbedtls nvs_flash
+    REQUIRES app_update bsp bt esp_event esp_hw_support esp_netif esp_timer esp_wifi mbedtls nvs_flash
 )
