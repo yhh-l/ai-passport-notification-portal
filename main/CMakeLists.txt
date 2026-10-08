@@ -1,5 +1,8 @@
 idf_component_register(
     SRCS "main.c"
+         "app_ble.c"
+         "app_alert.c"
+         "fonts/font_chinese_16.c"
          "ui_pixel.c"
          "ui_pixel_math.c"
          "demo_display.c"

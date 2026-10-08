@@ -1,3 +1,5 @@
+> This branch boots the Android notification companion. See [APP_README.md](APP_README.md) for build, installation and privacy notes. The reference information below describes the upstream BSP demos.
+
 # FoloToy AI Passport
 
 English | [简体中文](README.zh_CN.md)

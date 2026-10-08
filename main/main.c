@@ -1,141 +1,139 @@
-// main/main.c —— FoloToy-Card BSP 驱动参考示例:初始化 + 菜单 + 按键分发。
-//
-// 按键语义(全局统一):
-//   上/下 短按   菜单中=移动选中项;演示页中=该页自定义
-//   确定  短按   菜单中=进入选中项;演示页中=该页自定义
-//   确定  长按   演示页中=返回菜单(由本文件统一拦截)
-#include "bsp_i2c.h"
-#include "bsp_display.h"
-#include "bsp_button.h"
+// AI Passport: a private Android notification display.
+#include "app_ble.h"
+#include "app_alert.h"
 #include "bsp_audio.h"
-#include "bsp_battery.h"
-#include "bsp_pins.h"      // 错误日志里要打印 BSP_LCD_* 引脚号
-#include "demo.h"
-#include "ui_pixel.h"
-#include "lvgl.h"
+#include "bsp_button.h"
+#include "bsp_display.h"
+#include "bsp_i2c.h"
 #include "esp_log.h"
-#include "esp_sleep.h"
+#include "lvgl.h"
+#include "nvs_flash.h"
+#include <stdio.h>
+#include <string.h>
 
-static const char *TAG = "main";
+extern const lv_font_t font_chinese_16;
+static const char *TAG = "passport_notify";
+static lv_obj_t *s_message_label, *s_link_label, *s_alert_label, *s_category_label;
+static uint32_t s_message_until;
+static uint32_t s_last_code = UINT32_MAX;
+static char s_message[161];
+static bool s_muted, s_audio_ready;
+static esp_err_t s_ble_error;
 
-static const demo_entry_t DEMOS[] = {
-    { "Display", demo_display_enter, demo_display_exit, demo_display_key },
-    { "Button",  demo_button_enter,  demo_button_exit,  demo_button_key  },
-    { "Audio",   demo_audio_enter,   demo_audio_exit,   demo_audio_key   },
-    { "Battery", demo_battery_enter, demo_battery_exit, demo_battery_key },
-    { "Wi-Fi",   demo_wifi_enter,    demo_wifi_exit,    demo_wifi_key    },
-    { "BLE",     demo_ble_enter,     demo_ble_exit,     demo_ble_key     },
-    { "BLUFI Setup", demo_blufi_enter, demo_blufi_exit, demo_blufi_key   },
-    { "Low Power", demo_low_power_enter, demo_low_power_exit, demo_low_power_key },
-};
-#define DEMO_COUNT (sizeof(DEMOS) / sizeof(DEMOS[0]))
-
-// 各外设初始化结果:失败的项在菜单里标 [FAIL] 且不允许进入。
-static bool s_ok[DEMO_COUNT];
-
-static lv_obj_t *s_menu_scr;
-static lv_obj_t *s_cards[DEMO_COUNT];
-static lv_obj_t *s_rows[DEMO_COUNT];
-static lv_obj_t *s_mascot;
-static int  s_sel;                 // 当前选中项
-static int  s_active = -1;         // 当前所在演示页;-1 = 在菜单
-
-static void menu_refresh(void) {
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        lv_label_set_text_fmt(s_rows[i], "%s%s",
-                              DEMOS[i].name,
-                              s_ok[i] ? "" : "  [FAIL]");
-        ui_pixel_set_selected(s_cards[i], (int)i == s_sel, s_ok[i]);
-        lv_obj_set_style_text_color(s_rows[i],
-            s_ok[i] ? lv_color_hex(UI_INK) : lv_color_hex(0x7A2020), 0);
+static lv_obj_t *label(lv_obj_t *parent, const char *text, int x, int y,
+                       int w, int h, uint32_t color, lv_text_align_t align)
+{
+    lv_obj_t *obj = lv_label_create(parent);
+    lv_label_set_text(obj, text);
+    lv_label_set_long_mode(obj, LV_LABEL_LONG_WRAP);
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_size(obj, w, h);
+    lv_obj_set_style_text_font(obj, &font_chinese_16, 0);
+    lv_obj_set_style_text_color(obj, lv_color_hex(color), 0);
+    lv_obj_set_style_text_align(obj, align, 0);
+    return obj;
+}
+static lv_obj_t *panel(lv_obj_t *parent, int x, int y, int w, int h,
+                       int radius, uint32_t color)
+{
+    lv_obj_t *obj = lv_obj_create(parent);
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_size(obj, w, h);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
+    lv_obj_set_style_radius(obj, radius, 0);
+    lv_obj_set_style_border_width(obj, 0, 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_remove_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    return obj;
+}
+static void hide_message(void)
+{
+    memset(s_message, 0, sizeof(s_message));
+    s_message_until = 0;
+    lv_label_set_text(s_category_label, "最新消息");
+    lv_label_set_text(s_message_label, "等待手机通知...");
+}
+static void tick(lv_timer_t *timer)
+{
+    (void)timer;
+    uint32_t now = lv_tick_get();
+    app_message_t message;
+    while (app_ble_receive(&message)) {
+        // Sensitive message text lives in RAM only; never log or persist it.
+        memset(s_message, 0, sizeof(s_message));
+        snprintf(s_message, sizeof(s_message), "%s", message.text);
+        s_message_until = now + (message.type == 1 ? 20000 : 12000);
+        lv_label_set_text(s_category_label, message.type == 1 ? "短信通知" :
+                          message.type == 2 ? "应用通知" : "连接提示");
+        lv_label_set_text(s_message_label, s_message);
+        if (s_audio_ready && !s_muted) app_alert_play();
+    }
+    if (s_message_until && (int32_t)(now - s_message_until) >= 0) hide_message();
+    uint32_t code = app_ble_passkey();
+    if (code != s_last_code) {
+        s_last_code = code;
+        if (code != UINT32_MAX) lv_label_set_text_fmt(s_link_label, "配对码 %06lu · 请在手机输入", (unsigned long)code);
+    }
+    if (code == UINT32_MAX) {
+        lv_label_set_text(s_link_label, s_ble_error != ESP_OK ? "蓝牙启动失败" :
+                          app_ble_authenticated() ? "手机已安全配对" :
+                          app_ble_connected() ? "手机已连接 · 等待配对" : "等待连接 · PassportNotify");
     }
 }
-
-static void menu_build(void) {
-    s_menu_scr = ui_pixel_screen_create("FoloToy");
-
-    for (size_t i = 0; i < DEMO_COUNT; i++) {
-        int x = 11 + (int)(i % 2) * 112;
-        int y = 52 + (int)(i / 2) * 47;
-        s_cards[i] = ui_pixel_panel_create(s_menu_scr, x, y, 102, 40, UI_PAPER);
-        s_rows[i] = lv_label_create(s_cards[i]);
-        lv_obj_set_style_text_font(s_rows[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_align(s_rows[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_obj_center(s_rows[i]);
-    }
-
-    s_mascot = ui_pixel_mascot_create(s_menu_scr, 101, 242);
-
-    menu_refresh();
-    lv_screen_load(s_menu_scr);
-}
-
-static void enter_menu(void) {
-    s_active = -1;
-    menu_build();
-}
-
-// 按键回调运行在 button 组件的任务里,操作 LVGL 必须加锁。
-static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user) {
+static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
+{
     (void)user;
-    if (!bsp_lvgl_lock(500)) return;
-
-    if (s_active >= 0) {
-        if (btn == BSP_BTN_OK && ev == BSP_BTN_LONG) {     // 统一返回
-            DEMOS[s_active].exit();
-            enter_menu();
-        } else {
-            DEMOS[s_active].key(btn, ev);
-        }
-    } else if (ev == BSP_BTN_CLICK) {
-        if (btn == BSP_BTN_UP)   { s_sel = (s_sel + DEMO_COUNT - 1) % DEMO_COUNT; menu_refresh(); }
-        if (btn == BSP_BTN_DOWN) { s_sel = (s_sel + 1) % DEMO_COUNT;              menu_refresh(); }
-        if (btn == BSP_BTN_OK && s_ok[s_sel]) {
-            s_active = s_sel;
-            ui_pixel_mascot_jump(s_mascot);
-            lv_obj_delete(s_menu_scr);
-            s_menu_scr = NULL;
-            s_mascot = NULL;
-            DEMOS[s_active].enter();
-        } else if (btn == BSP_BTN_UP || btn == BSP_BTN_DOWN) {
-            ui_pixel_mascot_jump(s_mascot);
-        }
+    if (!bsp_lvgl_lock(200)) return;
+    if (btn == BSP_BTN_UP && ev == BSP_BTN_CLICK) {
+        hide_message();
+    } else if (btn == BSP_BTN_DOWN && ev == BSP_BTN_CLICK) {
+        s_muted = !s_muted;
+        app_alert_set_enabled(!s_muted);
+        lv_label_set_text(s_alert_label, s_muted ? "提示音已关闭" : "提示音已开启");
+    } else if (btn == BSP_BTN_OK && ev == BSP_BTN_CLICK) {
+        // Offline screen/button check, without displaying a cached notification.
+        hide_message();
+        lv_label_set_text(s_category_label, "设备自检");
+        lv_label_set_text(s_message_label, "屏幕与按键正常");
+        s_message_until = lv_tick_get() + 5000;
+        if (s_audio_ready && !s_muted) app_alert_play();
     }
     bsp_lvgl_unlock();
 }
-
-void app_main(void) {
-    ESP_LOGI(TAG, "FoloToy-Card BSP demo 启动");
-    esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
-    if (wakeup != ESP_SLEEP_WAKEUP_UNDEFINED) {
-        ESP_LOGI(TAG, "休眠唤醒原因: %d", wakeup);
-    }
-
+static void build_ui(void)
+{
+    lv_obj_t *scr = lv_obj_create(NULL);
+    lv_obj_set_style_bg_color(scr, lv_color_hex(0x101923), 0);
+    lv_obj_set_style_border_width(scr, 0, 0);
+    lv_obj_set_style_pad_all(scr, 0, 0);
+    lv_obj_remove_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
+    label(scr, "随身消息", 16, 13, 208, 27, 0xF3F6FA, LV_TEXT_ALIGN_LEFT);
+    s_link_label = label(scr, "等待连接 · PassportNotify", 16, 45, 208, 40, 0x94C5E8, LV_TEXT_ALIGN_LEFT);
+    lv_obj_t *box = panel(scr, 12, 93, 216, 170, 13, 0x243443);
+    s_category_label = label(box, "最新消息", 14, 14, 188, 27, 0x88D9C2, LV_TEXT_ALIGN_LEFT);
+    s_message_label = label(box, "等待手机通知...", 14, 51, 188, 105, 0xFFFFFF, LV_TEXT_ALIGN_LEFT);
+    s_alert_label = label(scr, "提示音已开启", 14, 271, 212, 22, 0x95AFC2, LV_TEXT_ALIGN_CENTER);
+    label(scr, "上:隐藏  下:静音  OK:自检", 6, 296, 228, 22, 0x95AFC2, LV_TEXT_ALIGN_CENTER);
+    lv_screen_load(scr);
+    lv_timer_create(tick, 200, NULL);
+}
+void app_main(void)
+{
     bsp_i2c_init();
-    bsp_i2c_scan();
-
-    // 屏幕是本 demo 的 UI 载体,失败就没有菜单可言 —— 打清楚日志后退出,
-    // 不做"串口菜单"降级(那会让本文件复杂一倍,违背参考示例的初衷)。
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
-        ESP_LOGE(TAG, "显示/LVGL 初始化失败,demo 无法继续。"
-                      "检查 SPI 接线(MOSI=%d SCLK=%d CS=%d DC=%d BL=%d)",
-                 BSP_LCD_MOSI, BSP_LCD_SCLK, BSP_LCD_CS, BSP_LCD_DC, BSP_LCD_BL);
+        ESP_LOGE(TAG, "display init failed");
         return;
     }
-    bsp_display_backlight(100);
-
-    // 其余外设单项失败不阻塞:菜单里标 [FAIL],其他项照常可测。
-    s_ok[0] = true;                                   // Display 已确认可用
-    s_ok[1] = (bsp_button_init(on_key, NULL) == ESP_OK);
-    s_ok[2] = (bsp_audio_init() == ESP_OK);
-    s_ok[3] = (bsp_battery_init() == ESP_OK);
-    s_ok[4] = true;                                    // 页面内按需初始化并显示错误
-    s_ok[5] = true;
-    s_ok[6] = true;
-    s_ok[7] = true;
-
-    if (bsp_lvgl_lock(1000)) { enter_menu(); bsp_lvgl_unlock(); }
-
-    ESP_LOGI(TAG, "就绪:Display=%d Button=%d Audio=%d Battery=%d",
-             s_ok[0], s_ok[1], s_ok[2], s_ok[3]);
+    bsp_display_backlight(85);
+    // BLE bonding needs NVS. Do not erase any existing device data on failure.
+    esp_err_t nvs_error = nvs_flash_init();
+    if (nvs_error != ESP_OK) ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(nvs_error));
+    s_audio_ready = bsp_audio_init() == ESP_OK;
+    if (s_audio_ready) app_alert_start();
+    if (bsp_lvgl_lock(1000)) { build_ui(); bsp_lvgl_unlock(); }
+    if (nvs_error == ESP_OK) s_ble_error = app_ble_start();
+    else s_ble_error = nvs_error;
+    if (s_ble_error != ESP_OK) ESP_LOGE(TAG, "BLE start failed: %s", esp_err_to_name(s_ble_error));
+    esp_err_t err = bsp_button_init(on_key, NULL);
+    if (err != ESP_OK) ESP_LOGE(TAG, "button init failed: %s", esp_err_to_name(err));
 }

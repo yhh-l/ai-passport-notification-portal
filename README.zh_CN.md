@@ -1,3 +1,5 @@
+> 本分支运行“Android 手机通知桥”专用固件。构建、安装和安全说明见 [APP_README.md](APP_README.md)。原文以下内容描述上游 BSP 演示基线。
+
 # FoloToy AI Passport
 
 [English](README.md) | 简体中文
