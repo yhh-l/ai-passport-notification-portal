@@ -26,7 +26,8 @@ final class PassportBleTest: NSObject, CBCentralManagerDelegate, CBPeripheralDel
         packet.append(body)
         central = CBCentralManager(delegate: self, queue: .main)
         DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
-            self?.finish("测试超时：未完成扫描、配对或写入", code: 3)
+            guard let self, !self.writeCompleted else { return }
+            self.finish("测试超时：未完成扫描、配对或写入", code: 3)
         }
         dispatchMain()
     }
