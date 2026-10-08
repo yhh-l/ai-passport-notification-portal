@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#define MESSAGE_STORE_CAPACITY 8
+#define MESSAGE_STORE_CAPACITY 32
 
 typedef struct {
     app_message_t items[MESSAGE_STORE_CAPACITY];

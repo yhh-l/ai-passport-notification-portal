@@ -45,7 +45,9 @@ int main(void)
     }
     assert(message_store_count(&store) == MESSAGE_STORE_CAPACITY);
     assert(strcmp(store.items[0].text, "item-2") == 0);
-    assert(strcmp(message_store_current(&store)->text, "item-9") == 0);
+    char expected_latest[16];
+    snprintf(expected_latest, sizeof(expected_latest), "item-%d", MESSAGE_STORE_CAPACITY + 1);
+    assert(strcmp(message_store_current(&store)->text, expected_latest) == 0);
 
     message_store_clear(&store);
     assert(message_store_count(&store) == 0);
