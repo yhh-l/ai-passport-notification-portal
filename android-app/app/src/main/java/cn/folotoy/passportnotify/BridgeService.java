@@ -33,6 +33,7 @@ import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.lang.reflect.Method;
 import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Queue;
@@ -95,6 +96,7 @@ public class BridgeService extends Service {
     private boolean gattBusy;
     private boolean mtuPending;
     private boolean connectedGreetingSent;
+    private boolean gattCacheRefreshAttempted;
     private int pendingOperation = OP_NONE;
     private int pendingLength;
     private boolean statusReadPending;
@@ -273,6 +275,7 @@ public class BridgeService extends Service {
                 stopScan();
                 setStatus("已发现设备，正在连接");
                 try {
+                    gattCacheRefreshAttempted = false;
                     gatt = result.getDevice().connectGatt(BridgeService.this, false,
                             callback, BluetoothDevice.TRANSPORT_LE);
                 } catch (SecurityException ignored) {
@@ -345,6 +348,19 @@ public class BridgeService extends Service {
                 currentConnected = notificationCharacteristic != null;
                 currentFirmwareSupported = firmwareControlCharacteristic != null &&
                         firmwareDataCharacteristic != null && firmwareStatusCharacteristic != null;
+                if (currentConnected && !currentFirmwareSupported && !gattCacheRefreshAttempted) {
+                    gattCacheRefreshAttempted = true;
+                    if (refreshGattCache(device)) {
+                        notificationCharacteristic = null;
+                        firmwareControlCharacteristic = null;
+                        firmwareDataCharacteristic = null;
+                        firmwareStatusCharacteristic = null;
+                        currentConnected = false;
+                        setStatus("检测到旧蓝牙缓存，正在刷新设备能力");
+                        handler.postDelayed(() -> discoverServices(device), 800);
+                        return;
+                    }
+                }
                 if (!currentConnected) {
                     setStatus("固件不匹配：缺少通知服务");
                     return;
@@ -400,6 +416,27 @@ public class BridgeService extends Service {
             handler.post(() -> handleStatusRead(device, copy, status));
         }
     };
+
+    private boolean refreshGattCache(BluetoothGatt device) {
+        try {
+            Method refresh = device.getClass().getMethod("refresh");
+            Object result = refresh.invoke(device);
+            return Boolean.TRUE.equals(result);
+        } catch (ReflectiveOperationException | RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    private void discoverServices(BluetoothGatt device) {
+        if (device != gatt || !permitted()) return;
+        try {
+            if (!device.discoverServices()) {
+                setStatus("读取设备能力失败，请重新连接");
+            }
+        } catch (SecurityException ignored) {
+            setStatus("缺少蓝牙连接权限");
+        }
+    }
 
     private void connectionReady() {
         if (!connectedGreetingSent) {
