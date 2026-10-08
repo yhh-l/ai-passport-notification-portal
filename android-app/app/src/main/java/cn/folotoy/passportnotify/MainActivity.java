@@ -79,6 +79,7 @@ public class MainActivity extends Activity {
         setContentView(buildContent());
         refreshConnectionState();
         refreshFirmwareList();
+        startBridge(false);
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
@@ -93,6 +94,7 @@ public class MainActivity extends Activity {
         receiverRegistered = true;
         refreshConnectionState();
         refreshSelectedApps();
+        startBridge(false);
     }
 
     @Override protected void onStop() {
@@ -144,7 +146,7 @@ public class MainActivity extends Activity {
         TextView secure = badge("本机安全连接", COLOR_CARD_ALT, COLOR_PRIMARY);
         statusRow.addView(secure);
         deviceCard.addView(statusRow);
-        connectionDetail = text("点击连接后，按设备屏幕提示完成配对。", 14, COLOR_MUTED, false);
+        connectionDetail = text("应用会在启动、开机和蓝牙恢复后自动连接。", 14, COLOR_MUTED, false);
         connectionDetail.setPadding(0, dp(9), 0, 0);
         deviceCard.addView(connectionDetail);
         slotStatus = text("设备玩法槽：尚未读取", 14, COLOR_TEXT, false);
@@ -159,8 +161,8 @@ public class MainActivity extends Activity {
 
         LinearLayout connectionActions = horizontal();
         connectionActions.setPadding(0, dp(14), 0, 0);
-        connectButton = actionButton("连接设备", COLOR_PRIMARY, Color.rgb(7, 32, 28),
-                view -> startBridge());
+        connectButton = actionButton("立即重连", COLOR_PRIMARY, Color.rgb(7, 32, 28),
+                view -> startBridge(true));
         testButton = actionButton("发送测试", COLOR_BLUE, Color.WHITE,
                 view -> {
                     if (!BridgeService.publish(2, "通知桥测试\n手机与 AI Passport 连接正常")) {
@@ -179,9 +181,11 @@ public class MainActivity extends Activity {
                         startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))),
                 weightedButton(true));
         deviceCard.addView(permissionActions);
-        Button stop = outlineButton("停止后台连接", view -> {
+        Button stop = outlineButton("暂停自动连接", view -> {
+            BridgeService.setAutoConnectEnabled(this, false);
             Intent intent = new Intent(this, BridgeService.class).setAction(BridgeService.STOP);
             startService(intent);
+            toast("已暂停；点击“立即重连”可恢复自动连接");
         });
         LinearLayout.LayoutParams stopParams = matchWrap();
         stopParams.topMargin = dp(8);
@@ -191,7 +195,7 @@ public class MainActivity extends Activity {
         root.addView(sectionTitle("通知转发"));
         LinearLayout notificationCard = card();
         TextView notificationIntro = text(
-                "只转发你勾选的应用。设备最多保留最近 32 条，短按 OK 后才移除。",
+                "只转发你勾选的应用。设备最多保留最近 32 条；短按 OK 只切换应用，不会删除消息。",
                 14, COLOR_MUTED, false);
         notificationCard.addView(notificationIntro);
         Switch otp = new Switch(this);
@@ -232,7 +236,7 @@ public class MainActivity extends Activity {
                 "手机可保存多个玩法；AI Passport 始终保留当前通知门户，并提供 1 个可替换玩法槽。",
                 14, COLOR_MUTED, false));
         TextView formatHint = text(
-                "仅接收 ESP32-C3 应用 .bin（≤1.81 MiB），仍需确认兼容 AI Passport 硬件；不要选择 full.bin。",
+                "仅接收 ESP32-C3 应用 .bin（≤4.00 MiB），仍需确认兼容 AI Passport 硬件；不要选择 full.bin。",
                 12, Color.rgb(244, 184, 96), false);
         formatHint.setPadding(0, dp(8), 0, 0);
         firmwareCard.addView(formatHint);
@@ -257,6 +261,10 @@ public class MainActivity extends Activity {
         helpCard.addView(keyRow("长按 OK 3 秒", "启动选中的自定义玩法"));
         helpCard.addView(divider());
         helpCard.addView(keyRow("重新开机", "兼容玩法会自动回到常驻门户"));
+        helpCard.addView(divider());
+        helpCard.addView(keyRow("消息页 OK", "在全部 / 微信 / 飞书 / 短信等应用间切换"));
+        helpCard.addView(divider());
+        helpCard.addView(keyRow("消息页长按上 + OK", "仅清空当前消息所属应用"));
         TextView recovery = text(
                 "注意：第三方固件若主动确认 OTA 或依赖不同分区表，可能无法自动返回，只能用 USB 恢复门户。",
                 12, Color.rgb(244, 184, 96), false);
@@ -266,24 +274,31 @@ public class MainActivity extends Activity {
         return scroll;
     }
 
-    private void startBridge() {
+    private void startBridge(boolean interactive) {
+        if (interactive) BridgeService.setAutoConnectEnabled(this, true);
+        else if (!BridgeService.isAutoConnectEnabled(this)) return;
         if (!hasBluetoothPermissions()) {
-            requestBluetoothPermissions();
+            if (interactive) requestBluetoothPermissions();
             return;
         }
         BluetoothManager manager = getSystemService(BluetoothManager.class);
         BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
         try {
             if (adapter == null || !adapter.isEnabled()) {
-                startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
+                if (interactive) startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
                 return;
             }
         } catch (SecurityException ignored) {
-            requestBluetoothPermissions();
+            if (interactive) requestBluetoothPermissions();
             return;
         }
-        Intent intent = new Intent(this, BridgeService.class).setAction(BridgeService.START);
-        startForegroundService(intent);
+        BridgeService.requestAutomaticStart(this);
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                                     int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1 && hasBluetoothPermissions()) startBridge(false);
     }
 
     private boolean hasBluetoothPermissions() {
@@ -399,7 +414,7 @@ public class MainActivity extends Activity {
         } else {
             slotStatus.setText("设备玩法槽：空");
         }
-        connectButton.setText(connected ? "设备已连接" : "连接设备");
+        connectButton.setText(connected ? "设备已连接" : "立即重连");
         connectButton.setEnabled(!connected && !active);
         connectButton.setAlpha(connectButton.isEnabled() ? 1f : 0.55f);
         testButton.setEnabled(connected && !active);

@@ -11,3 +11,5 @@ android-app/app/build/
 android-app/local.properties
 # Local full-flash backup may contain Wi-Fi credentials and BLE keys.
 .local-backups/
+
+build-*/

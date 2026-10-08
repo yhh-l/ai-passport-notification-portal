@@ -58,6 +58,8 @@ public class BridgeService extends Service {
     private static final UUID FIRMWARE_DATA = UUID.fromString("4a17d400-34ad-4d7b-93f8-84237aacc011");
     private static final UUID FIRMWARE_STATUS = UUID.fromString("4a17d400-34ad-4d7b-93f8-84237aacc012");
     private static final String CHANNEL = "bridge";
+    private static final String CONNECTION_PREFS = "bridge_connection";
+    private static final String AUTO_CONNECT = "auto_connect";
     private static final int NOTIFICATION_ID = 41;
     private static final int OP_NONE = 0;
     private static final int OP_NOTIFICATION = 1;
@@ -147,6 +149,40 @@ public class BridgeService extends Service {
     public static boolean isSlotPresent() { return currentSlotPresent; }
     public static String slotName() { return currentSlotName; }
 
+    public static boolean isAutoConnectEnabled(Context context) {
+        return context.getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE)
+                .getBoolean(AUTO_CONNECT, true);
+    }
+
+    public static void setAutoConnectEnabled(Context context, boolean enabled) {
+        context.getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(AUTO_CONNECT, enabled).apply();
+    }
+
+    public static boolean requestAutomaticStart(Context context) {
+        Context app = context.getApplicationContext();
+        if (!isAutoConnectEnabled(app)) return false;
+        if (Build.VERSION.SDK_INT >= 31 &&
+                (app.checkSelfPermission(Manifest.permission.BLUETOOTH_SCAN) != PackageManager.PERMISSION_GRANTED ||
+                 app.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT < 31 &&
+                app.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
+            return false;
+        }
+        BluetoothManager manager = app.getSystemService(BluetoothManager.class);
+        BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+        try {
+            if (adapter == null || !adapter.isEnabled()) return false;
+            Intent start = new Intent(app, BridgeService.class).setAction(START);
+            app.startForegroundService(start);
+            return true;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
     @Override public IBinder onBind(Intent intent) { return null; }
 
     @Override public void onCreate() {
@@ -156,6 +192,7 @@ public class BridgeService extends Service {
         manager.createNotificationChannel(new NotificationChannel(
                 CHANNEL, "AI Passport 连接", NotificationManager.IMPORTANCE_LOW));
         IntentFilter filter = new IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED);
+        filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(bondReceiver, filter, Context.RECEIVER_EXPORTED);
         } else {
@@ -206,11 +243,12 @@ public class BridgeService extends Service {
             enqueue(intent.getIntExtra("type", 2), intent.getStringExtra("text"));
             return START_STICKY;
         }
+        String foregroundText = currentConnected ? currentStatus : "正在扫描 PassportNotify";
         if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification("正在扫描 PassportNotify"),
+            startForeground(NOTIFICATION_ID, notification(foregroundText),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE);
         } else {
-            startForeground(NOTIFICATION_ID, notification("正在扫描 PassportNotify"));
+            startForeground(NOTIFICATION_ID, notification(foregroundText));
         }
         scan();
         return START_STICKY;
@@ -295,6 +333,20 @@ public class BridgeService extends Service {
 
     private final BroadcastReceiver bondReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
+            if (BluetoothAdapter.ACTION_STATE_CHANGED.equals(intent.getAction())) {
+                int adapterState = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE,
+                        BluetoothAdapter.ERROR);
+                if (adapterState == BluetoothAdapter.STATE_ON) {
+                    handler.post(BridgeService.this::scan);
+                } else if (adapterState == BluetoothAdapter.STATE_OFF) {
+                    handler.post(() -> {
+                        stopScan();
+                        closeGatt();
+                        setStatus("手机蓝牙未开启");
+                    });
+                }
+                return;
+            }
             BluetoothDevice device = Build.VERSION.SDK_INT >= 33 ?
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice.class) :
                     intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
@@ -795,7 +847,7 @@ public class BridgeService extends Service {
             }
         }
         if (firmwareWakeLock != null && !firmwareWakeLock.isHeld()) {
-            firmwareWakeLock.acquire(15 * 60 * 1000L);
+            firmwareWakeLock.acquire(30 * 60 * 1000L);
         }
     }
 
@@ -809,19 +861,29 @@ public class BridgeService extends Service {
         firmwareStream = null;
     }
 
+    private void closeGatt() {
+        BluetoothGatt activeGatt = gatt;
+        gatt = null;
+        notificationCharacteristic = null;
+        firmwareControlCharacteristic = null;
+        firmwareDataCharacteristic = null;
+        firmwareStatusCharacteristic = null;
+        currentConnected = false;
+        currentFirmwareSupported = false;
+        if (activeGatt == null) return;
+        try {
+            activeGatt.disconnect();
+            activeGatt.close();
+        } catch (SecurityException ignored) { }
+    }
+
     @Override public void onDestroy() {
         instance = null;
         stopScan();
         handler.removeCallbacksAndMessages(null);
         closeFirmwareStream();
         releaseFirmwareWakeLock();
-        if (gatt != null) {
-            try {
-                gatt.disconnect();
-                gatt.close();
-            } catch (SecurityException ignored) { }
-            gatt = null;
-        }
+        closeGatt();
         try { unregisterReceiver(bondReceiver); } catch (IllegalArgumentException ignored) { }
         packets.clear();
         currentConnected = false;

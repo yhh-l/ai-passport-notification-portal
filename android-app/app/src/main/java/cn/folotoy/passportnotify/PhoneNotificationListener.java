@@ -15,6 +15,11 @@ public class PhoneNotificationListener extends NotificationListenerService {
     private static final Pattern CODE = Pattern.compile("(?<![0-9])[0-9]{4,8}(?![0-9])");
     private final Map<String, String> lastForwarded = new ConcurrentHashMap<>();
 
+    @Override public void onListenerConnected() {
+        super.onListenerConnected();
+        BridgeService.requestAutomaticStart(this);
+    }
+
     @Override public void onNotificationPosted(StatusBarNotification sbn) {
         String pkg = sbn.getPackageName();
         Set<String> allowed = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
@@ -36,12 +41,17 @@ public class PhoneNotificationListener extends NotificationListenerService {
         boolean showOtp = getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
                 .getBoolean(MainActivity.OTP, false);
         String app = appLabel(pkg);
-        String heading = title.isEmpty() || title.equals(app) ? app : app + " · " + title;
+        String heading = title.isEmpty() || title.equals(app) ? "" : title;
         String text;
         if (sms && !showOtp) {
-            text = heading + "\n新短信（内容已隐藏）";
+            text = app + "\n新短信（内容已隐藏）";
         } else {
-            text = heading + (body.isEmpty() || body.equals(title) ? "" : "\n" + body);
+            String content = heading;
+            if (!body.isEmpty() && !body.equals(title)) {
+                content += (content.isEmpty() ? "" : " · ") + body;
+            }
+            if (content.isEmpty()) content = "收到一条新通知";
+            text = app + "\n" + content;
             // Preserve context while hiding only likely verification codes. The
             // previous behavior replaced the entire notification text.
             if (!showOtp) text = CODE.matcher(text).replaceAll("****");

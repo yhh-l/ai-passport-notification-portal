@@ -1,9 +1,10 @@
-# Preserve cardid/storage offsets. OTA metadata lives in unused factory padding so a merged image never crosses cardid.
+# Preserve NVS, PHY and cardid offsets. Radio/custom firmware gets one 4 MiB OTA slot.
+# Flash this layout with segmented images only; do not write a gap-padded merged image across cardid.
 # Name,    Type, SubType, Offset,   Size,      Flags
 nvs,       data, nvs,     0x9000,   0x6000,
 phy_init,  data, phy,     0xf000,   0x1000,
-factory,   app,  factory, 0x10000,  0x3f0000,
-otadata,   data, ota,     0x400000, 0x2000,
+user_app,  app,  ota_0,   0x10000,  0x400000,
 cardid,    data, nvs,     0x410000, 0x4000,
-storage,   data, spiffs,  0x420000, 0x200000,
-user_app,  app,  ota_0,   0x630000, 0x1d0000,
+otadata,   data, ota,     0x414000, 0x2000,
+factory,   app,  factory, 0x420000, 0x160000,
+storage,   data, spiffs,  0x580000, 0x280000,

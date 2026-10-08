@@ -28,6 +28,8 @@ static lv_obj_t *s_source_label, *s_counter_label, *s_icon_box, *s_icon_label;
 static lv_obj_t *s_card, *s_help_label, *s_toast_box;
 static lv_obj_t *s_audio_icon_box, *s_audio_icon_label;
 static message_store_t s_messages;
+static char s_filter_source[64];
+static char s_clear_source[64];
 static uint32_t s_overlay_until, s_hint_until;
 static uint32_t s_last_code = UINT32_MAX;
 static bool s_overlay_active, s_hint_active, s_clear_confirmation;
@@ -104,13 +106,6 @@ static void screen_sleep(void)
     s_wake_input_pending = false;
 }
 
-static const char *message_category(uint8_t type)
-{
-    if (type == 1) return "短信通知";
-    if (type == 2) return "应用通知";
-    return "连接提示";
-}
-
 static void set_source_badge(uint8_t type, const char *source)
 {
     const char *glyph = type == 1 ? "信" : "通";
@@ -141,6 +136,16 @@ static void set_content_mode(bool has_content)
 
 static void show_current_message(void)
 {
+    if (s_filter_source[0] != '\0') {
+        char current_source[64];
+        message_store_message_source(message_store_current(&s_messages),
+                                     current_source, sizeof(current_source));
+        if (strcmp(current_source, s_filter_source) != 0 &&
+            !message_store_select_latest_source(&s_messages, s_filter_source)) {
+            s_filter_source[0] = '\0';
+            message_store_select_latest_source(&s_messages, NULL);
+        }
+    }
     const app_message_t *message = message_store_current(&s_messages);
     if (!message) {
         set_content_mode(false);
@@ -157,22 +162,20 @@ static void show_current_message(void)
     const char *body = message->text;
     const char *newline = strchr(message->text, '\n');
     char source[64];
+    message_store_message_source(message, source, sizeof(source));
     if (newline) {
-        size_t source_length = (size_t)(newline - message->text);
-        if (source_length >= sizeof(source)) source_length = sizeof(source) - 1;
-        memcpy(source, message->text, source_length);
-        source[source_length] = '\0';
         body = newline + 1;
-    } else {
-        snprintf(source, sizeof(source), "%s", message_category(message->type));
     }
     if (*body == '\0') body = message->text;
 
     char counter[24];
     snprintf(counter, sizeof(counter), "%u/%u",
-             (unsigned)message_store_current_number(&s_messages),
-             (unsigned)message_store_count(&s_messages));
-    lv_label_set_text(s_source_label, source);
+             (unsigned)message_store_current_number_source(&s_messages, s_filter_source),
+             (unsigned)message_store_count_source(&s_messages, s_filter_source));
+    char source_title[80];
+    snprintf(source_title, sizeof(source_title), "%s%s", source,
+             s_filter_source[0] ? " · 筛选" : "");
+    lv_label_set_text(s_source_label, source_title);
     lv_label_set_text(s_counter_label, counter);
     lv_label_set_text(s_message_label, body);
     set_source_badge(message->type, source);
@@ -280,8 +283,89 @@ static void save_muted_preference(void)
 static void cancel_clear_confirmation(void)
 {
     s_clear_confirmation = false;
+    s_clear_source[0] = '\0';
     cancel_overlay();
     restore_primary_view();
+}
+
+static void cycle_source_filter(void)
+{
+    size_t source_count = message_store_source_count(&s_messages);
+    if (source_count == 0) {
+        show_hint("暂无消息", 1200);
+        return;
+    }
+
+    char next_source[64] = "";
+    if (s_filter_source[0] == '\0') {
+        message_store_source_at(&s_messages, 0, next_source, sizeof(next_source));
+    } else {
+        bool found = false;
+        char source[64];
+        for (size_t index = 0; index < source_count; index++) {
+            if (!message_store_source_at(&s_messages, index, source, sizeof(source))) break;
+            if (strcmp(source, s_filter_source) != 0) continue;
+            found = true;
+            if (index + 1 < source_count) {
+                message_store_source_at(&s_messages, index + 1,
+                                        next_source, sizeof(next_source));
+            }
+            break;
+        }
+        if (!found) next_source[0] = '\0';
+    }
+
+    snprintf(s_filter_source, sizeof(s_filter_source), "%s", next_source);
+    message_store_select_latest_source(&s_messages,
+                                       s_filter_source[0] ? s_filter_source : NULL);
+    show_current_message();
+    if (s_filter_source[0]) {
+        char hint[96];
+        snprintf(hint, sizeof(hint), "仅看 %s · %u 条", s_filter_source,
+                 (unsigned)message_store_count_source(&s_messages, s_filter_source));
+        show_hint(hint, 1500);
+    } else {
+        show_hint("显示全部应用", 1300);
+    }
+}
+
+static void begin_clear_current_source(void)
+{
+    if (message_store_count(&s_messages) == 0) {
+        show_hint("暂无消息", 1200);
+        return;
+    }
+
+    if (s_filter_source[0]) {
+        snprintf(s_clear_source, sizeof(s_clear_source), "%s", s_filter_source);
+    } else {
+        message_store_message_source(message_store_current(&s_messages),
+                                     s_clear_source, sizeof(s_clear_source));
+    }
+    if (s_clear_source[0] == '\0') {
+        show_hint("无法识别消息应用", 1500);
+        return;
+    }
+
+    s_clear_confirmation = true;
+    char category[96];
+    snprintf(category, sizeof(category), "清空 %s？", s_clear_source);
+    show_overlay(category, "短按 OK：确认清空\n按上/下键：取消", 6000);
+}
+
+static void confirm_clear_current_source(void)
+{
+    char cleared_source[64];
+    snprintf(cleared_source, sizeof(cleared_source), "%s", s_clear_source);
+    size_t removed = message_store_clear_source(&s_messages, cleared_source);
+    s_clear_confirmation = false;
+    s_clear_source[0] = '\0';
+    if (strcmp(s_filter_source, cleared_source) == 0) s_filter_source[0] = '\0';
+
+    char result[128];
+    snprintf(result, sizeof(result), "%s消息已清空\n共移除 %u 条",
+             cleared_source, (unsigned)removed);
+    show_overlay("消息管理", result, 2000);
 }
 
 static void tick(lv_timer_t *timer)
@@ -294,13 +378,22 @@ static void tick(lv_timer_t *timer)
         if (message.type == 3) {
             if (!s_portal_active && !app_firmware_busy()) {
                 s_clear_confirmation = false;
+                s_clear_source[0] = '\0';
                 show_overlay("连接提示", message.text, 3500);
             }
             continue;
         }
 
+        char incoming_source[64];
+        message_store_message_source(&message, incoming_source, sizeof(incoming_source));
         bool dropped_oldest = message_store_push(&s_messages, &message);
+        if (s_filter_source[0] && strcmp(incoming_source, s_filter_source) != 0) {
+            // A filter must never hide a newly arrived notification. Return to the
+            // all-app view so the just-pushed message remains selected and visible.
+            s_filter_source[0] = '\0';
+        }
         s_clear_confirmation = false;
+        s_clear_source[0] = '\0';
         if (!s_portal_active && !app_firmware_busy()) {
             cancel_overlay();
             show_current_message();
@@ -332,6 +425,7 @@ static void tick(lv_timer_t *timer)
 
     if (s_overlay_active && (int32_t)(now - s_overlay_until) >= 0) {
         s_clear_confirmation = false;
+        s_clear_source[0] = '\0';
         cancel_overlay();
         restore_primary_view();
     }
@@ -441,6 +535,7 @@ static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
 
     if (event == BSP_BTN_DOUBLE && button == BSP_BTN_OK) {
         s_clear_confirmation = false;
+        s_clear_source[0] = '\0';
         cancel_overlay();
         s_portal_active = !s_portal_active;
         if (s_portal_active) show_portal();
@@ -468,9 +563,7 @@ static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
     if (event == BSP_BTN_CLICK) {
         if (s_clear_confirmation) {
             if (button == BSP_BTN_OK) {
-                s_clear_confirmation = false;
-                message_store_clear(&s_messages);
-                show_overlay("消息管理", "全部消息已清空", 1800);
+                confirm_clear_current_source();
             } else {
                 cancel_clear_confirmation();
                 show_hint("已取消清空", 1200);
@@ -482,31 +575,22 @@ static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
         cancel_overlay();
         if (button == BSP_BTN_UP) {
             if (message_store_count(&s_messages) == 0) show_hint("暂无消息", 1200);
-            else if (!message_store_previous(&s_messages)) show_hint("已经是第一条", 1200);
+            else if (!message_store_previous_in_source(&s_messages, s_filter_source)) {
+                show_hint("已经是第一条", 1200);
+            }
             show_current_message();
         } else if (button == BSP_BTN_DOWN) {
             if (message_store_count(&s_messages) == 0) show_hint("暂无消息", 1200);
-            else if (!message_store_next(&s_messages)) show_hint("已经是最新一条", 1200);
+            else if (!message_store_next_in_source(&s_messages, s_filter_source)) {
+                show_hint("已经是最新一条", 1200);
+            }
             show_current_message();
         } else if (button == BSP_BTN_OK) {
-            if (message_store_dismiss_current(&s_messages)) {
-                show_current_message();
-                char hint[40];
-                snprintf(hint, sizeof(hint), "已处理 · 剩余 %u 条",
-                         (unsigned)message_store_count(&s_messages));
-                show_hint(hint, 1600);
-            } else {
-                show_hint("暂无可处理消息", 1200);
-            }
+            cycle_source_filter();
         }
     } else if (event == BSP_BTN_LONG) {
         if (button == BSP_BTN_UP) {
-            if (message_store_count(&s_messages) == 0) {
-                show_hint("暂无消息", 1200);
-            } else {
-                s_clear_confirmation = true;
-                show_overlay("确认清空全部？", "短按 OK：确认清空\n按上/下键：取消", 6000);
-            }
+            begin_clear_current_source();
         } else if (button == BSP_BTN_DOWN) {
             if (s_clear_confirmation) cancel_clear_confirmation();
             s_muted = !s_muted;
@@ -516,6 +600,7 @@ static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
             show_hint(s_muted ? "已静音" : "提示音已恢复", 1200);
         } else if (button == BSP_BTN_OK) {
             s_clear_confirmation = false;
+            s_clear_source[0] = '\0';
             show_overlay("设备自检",
                          s_muted ? "屏幕与按键正常 · 当前静音" :
                                    "屏幕、按键与提示音正常",
@@ -559,7 +644,7 @@ static void build_ui(void)
     lv_obj_set_style_text_line_space(s_message_label, 4, 0);
 
     s_help_label = label(screen,
-                         "上/下翻阅 · OK处理 · 双击OK门户\n双击下键熄屏 · 长按下键静音",
+                         "上/下翻阅 · OK切换应用 · 双击OK门户\n长按上清空应用 · 长按下键静音",
                          8, 278, 224, 40, 0x88A5B8, LV_TEXT_ALIGN_CENTER);
     lv_obj_set_style_text_line_space(s_help_label, 2, 0);
 

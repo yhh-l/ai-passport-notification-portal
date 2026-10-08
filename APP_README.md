@@ -1,91 +1,135 @@
 # AI Passport 门户（Android 通知桥 + 固件玩法库）
 
-本项目参照 [FoloToy AI Passport 创建玩法教程](https://ai-passport.folotoy.cn/guides/create-a-play-with-agent/) 的开发/编译/验证流程，将当前“随身消息”固件升级为**常驻门户**：它继续把普通 Android 手机上选定应用发布的系统通知通过 BLE 传给 AI Passport，同时允许 Android APK 保存多个本地玩法固件，并通过安全 BLE 把其中一个安装到设备玩法槽。没有木鱼、计数、飞书服务端接口，也不读取短信数据库。BLE 广播名称 `PassportNotify`。
+本项目参照 [FoloToy AI Passport 创建玩法教程](https://ai-passport.folotoy.cn/guides/create-a-play-with-agent/) 的开发、编译和实机验证流程，将“随身消息”做成常驻门户：普通 Android 手机把已选择应用的系统通知通过加密 BLE 发送到 AI Passport；Android APK 还可保存多个兼容玩法固件，并把其中一个安装到设备上的用户玩法槽。项目不读取短信数据库、不接入飞书服务端 API，BLE 广播名为 `PassportNotify`。
 
-## 本机开发环境与构建
+## 本机环境与构建
 
-- ESP-IDF 5.5.3：`~/esp/esp-idf-v5.5.3`；CMake/Ninja 已装在其 Python 环境。固件构建：
-  ```sh
-  source ~/esp/esp-idf-v5.5.3/export.sh
-  idf.py build
-  # 本机 ESP-IDF 5.5.3 的 idf.py merge-bin 会因 --flash_size detect 报错，
-  # 改用同环境的 esptool 显式指定已验证的 8 MB 闪存：
-  python -m esptool --chip esp32c3 merge_bin \
-    -o build/FoloToy-AI-Passport-full.bin --format raw \
-    --flash_mode dio --flash_freq 80m --flash_size 8MB \
-    0x0 build/bootloader/bootloader.bin \
-    0x8000 build/partition_table/partition-table.bin \
-    0x10000 build/FoloToy-AI-Passport.bin \
-    0x400000 build/ota_data_initial.bin
-  ```
-- Android SDK：`~/Library/Android/sdk`；JDK 17：`/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`。手机应用编译：
-  ```sh
-  cd android-app
-  JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
-    ANDROID_HOME="$HOME/Library/Android/sdk" ./gradlew clean assembleDebug lintDebug
-  ```
-- 中文字体来自 Noto Sans SC，16px / 1bpp，包含 GB2312 及部分界面字。授权见 `main/fonts/OFL-NotoSansSC.txt`；GB2312 以外文字和表情可能缺字。
+- ESP-IDF 5.5.3：`~/esp/esp-idf-v5.5.3`
+- 目标芯片：ESP32-C3，8 MB Flash，无 PSRAM
+- Android SDK：`~/Library/Android/sdk`
+- JDK 17：`/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home`
 
-## 开发基线与恢复
-
-- 上游默认分支 `origin/main`（提交 `33d3d1d`）已在独立干净目录 `/tmp/ai-passport-upstream-baseline-2026-10-08` 用 ESP-IDF 5.5.3 构建通过。可恢复的上游 0x0 合并镜像为 `.local-backups/ai-passport-upstream-main-2026-10-08.bin`。它**只验证了编译，未在本设备刷写验收**。
-- 当前开发分支 `codex/passport-notifications` 源于仓库的 `demo/blufi-provisioning`（`9c039cc`），按原有 BSP 实现通知版；与独立构建的 `origin/main` 默认玩法镜像是两条不同基线。
-- 已连接测试板确认是 ESP32-C3（8 MB XMC 闪存，USB 串口 `/dev/cu.usbmodem1101`），安全启动/闪存加密均关闭。原机分区为 `nvs/phy_init/factory(4 MB)/cardid/storage`；门户分区表保持 `cardid=0x410000`、`storage=0x420000` 不变，把工厂门户调整为 4032 KiB，在其原空白尾部 `0x400000` 放 8 KiB OTA 元数据，并在原机空闲尾部 `0x630000` 放置 1856 KiB 的单一用户玩法槽。固件本身不主动格式化 `cardid/storage`。**但从 0x0 写入整份合并镜像会把镜像空洞中的 0xFF 一并写到 NVS / phy_init 分区，可能清除原机 Wi-Fi 配网和其他设置；不能声称完整保留原机数据。**其当前全部 8 MB 内容保存在 `.local-backups/ai-passport-original-flash-2026-10-08.bin`，SHA-256：`b3dce15e5737a0ac85da2194717aa2b5285b28058a04388d0ce367dfb97243c4`。镜像中的应用描述识别为 `passport-os 0.2.0-rc.10`（构建时间 2026-10-06），镜像校验有效。此备份是刷写前的实际原机镜像，**仍未完成显示/按键实测或试恢复，不声称它等同官方公开发行包**。
-- `.local-backups/` 被 Git 忽略并且文件权限仅当前用户可读；**原始闪存可能包含 Wi-Fi 密码、BLE 密钥等敏感资料，不要上传分享或提交仓库**。构建目录清理不会删除此文件。
-- 如确需恢复原机全部内容，先核对目标设备、文件 SHA-256、8 MB 容量及串口，再执行（**这会覆盖现有数据，仅在明确同意后操作**）：
-  ```sh
-  source ~/esp/esp-idf-v5.5.3/export.sh
-  python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
-    write_flash 0x0 .local-backups/ai-passport-original-flash-2026-10-08.bin
-  ```
-- 单独恢复上游示例玩法而不复制设备原有数据时，改用 `.local-backups/ai-passport-upstream-main-2026-10-08.bin`；这不是原机完整备份。USB 线需能传数据，刷写期间保持连接。
-
-## 安装与操作（烧录前先确认）
-
-固件输出位于 `build/FoloToy-AI-Passport-full.bin`（合并镜像，偏移 0x0）。该镜像结束于 `0x402000`，低于 `cardid` 的 `0x410000` 起始地址，因此不会跨过并覆盖 `cardid/storage`；但教程的本地安装工具写入此文件时仍会覆盖镜像范围内的 NVS/phy 等区域；已先保存整片闪存作为可恢复备份，但没有试恢复。若希望尽量保留原机 NVS，请在核对串口、板型和备份后，优先执行 `idf.py -p /dev/cu.usbmodem1101 flash monitor`（分段写入 bootloader / 分区表 / app，不调用整片擦除）；这仍会替换原固件，且现有 NVS 内容与新固件可能不兼容。**无论哪种方式都先征得用户确认再刷机**。串口名称按实际检测为准，不应硬编码。
-
-手机 APK 位于 `android-app/app/build/outputs/apk/debug/app-debug.apk`（版本 1.1，本地 Debug 签名）。新版使用自适应门户图标、深色卡片界面、实时连接/玩法槽状态与传输进度。安装到 Android 手机后：
-
-1. 设备顶部显示“等待连接”；在手机上开启蓝牙。BLE 广播名称仍为 `PassportNotify`。
-2. 打开“AI Passport 门户”，授权附近设备（蓝牙扫描/连接），并在系统“通知使用权”中启用本应用。授权通知显示权限，以便前台连接服务显示状态。
-3. 在应用列表中**主动勾选**需要转发的短信应用、飞书等应用；点击“连接设备”。设备显示六位配对码时，在系统弹窗输入对应数字。软件不依赖三星专用 SDK。
-4. 设备在 RAM 中保留最近 32 条真实通知，**不再按时间自动消失**；新消息到达后显示最新一条，并显示来源彩色标识和当前位置（例如 `2/2`）。短按上键查看前一条、短按下键查看后一条、短按 OK 将当前消息标记为已处理并移除；到达列表边界或执行操作时会显示短暂浮层。同一条 Android 通知被系统重复发布且内容未变化时会被手机端合并；不同通知即使文字相同也会分别保留。列表满时只移除最早一条。
-5. 长按采用 3 秒防误触：长按上键先进入“清空全部”确认页，随后短按 OK 才会清空，短按上/下键取消；长按下键切换静音，状态压缩为顶部右侧的扬声器/静音图标，静音偏好会保存在 NVS；长按 OK 进行屏幕、按键和声音自检。屏幕在 60 秒无按键、无新通知且不处于配对/固件传输时自动熄灭；双击下键可立即熄屏，任意键会只唤醒屏幕而不执行原按键动作，新通知、配对码和固件传输会自动亮屏。这里的“熄屏”会关闭 LCD 显示输出和背光，但保持 CPU、BLE 与通知接收运行，并非断开连接的深度睡眠。**有消息时按键说明自动隐藏，消息卡片扩展到屏幕底部；只有消息列表为空时才显示操作说明。**重启会清除消息内容，但不会重置静音偏好。连接提示是短暂状态，不占用消息列表。
-6. **短信正文/验证码默认隐藏**。确有需要再主动勾选“在设备屏幕显示短信内容/验证码”；任何能看见设备屏幕的人都可能看到内容，建议用后关闭。未开启时，普通应用通知仍保留上下文，只把独立的 4–8 位数字替换为星号，不再隐藏整条消息。
-7. 连接后可在手机上点击“发送测试”检查链路；这条测试通知也会进入消息列表，需短按 OK 移除。点击“停止后台连接”结束转发。Android 的厂商省电策略可能让前台服务中断；允许应用必要的后台运行权限。服务断开时未送达消息不会作为通知历史同步。
-8. “固件玩法库”可从系统文件选择器导入多个 `.bin` 并离线保存在手机中。APK 会检查 ESP 应用头、应用描述、ESP32-C3 芯片标识、文件大小和 SHA-256，但**芯片匹配不等于板级兼容**，只应导入明确支持 AI Passport 硬件/BSP 的应用固件。点击“安装到设备”会通过加密 BLE 替换设备上唯一的用户玩法槽；传输期间 APK 会临时保持 CPU 唤醒，发生本地读取或 GATT 错误时主动断开，让设备端放弃未完成镜像。
-
-## 门户分区、切换与恢复规则
-
-- 工厂分区中的“随身消息”是常驻门户；手机可以保存多个固件，但当前 8 MB 设备只提供 **1 个 1856 KiB 用户玩法槽**，安装新玩法会替换旧玩法，不会替换工厂门户。
-- 通知界面中**双击 OK**进入/退出玩法门户；门户内短按上/下选择“随身消息”或用户玩法，选中用户玩法后**长按 OK 3 秒**启动。
-- 用户玩法首次启动处于 ESP-IDF OTA 待确认状态。兼容玩法不主动确认 OTA 时，重新开机一次会由回滚机制返回工厂门户。进入用户玩法后，门户本身不再运行，因此门户的双击/长按逻辑不能直接接管第二固件；若希望在玩法内通过特殊按键立即返回，玩法必须接入统一的“切回 factory 分区并重启”接口。若第三方固件主动调用 OTA 确认、改写 OTA 元数据、依赖其他分区布局，或本身与 AI Passport 硬件不兼容，则自动返回不再有保证，可能需要 USB 恢复。
-- 新增固件 BLE 特征仍位于同一加密服务：控制 `...c010`、数据 `...c011`、状态 `...c012`，均要求 MITM 认证加密。控制命令支持开始、结束、取消和清空设备槽；断开连接会中止未完成传输。
-
-## Mac 电脑 BLE 冒烟测试
-
-源码位于 `tools/macos_ble_test.swift`。Mac 开启蓝牙后可编译运行：
+门户固件构建：
 
 ```sh
-xcrun swiftc -framework Foundation -framework CoreBluetooth \
-  tools/macos_ble_test.swift -o /tmp/passport_ble_test
-/tmp/passport_ble_test "电脑蓝牙测试 · AI Passport 正常"
-# 第二个参数可选：保持加密连接的秒数，便于观察“已安全配对”状态
-/tmp/passport_ble_test "电脑蓝牙保持连接测试" 300
-# 第三个参数可选：app / sms / connect，模拟对应类别的消息
-/tmp/passport_ble_test "微信 · 文件传输助手：测试通知" 300 app
+source ~/esp/esp-idf-v5.5.3/export.sh
+idf.py -B build-slot-portal build
 ```
 
-首次连接使用 BLE Secure Connections + MITM：AI Passport 显示六位码，由 macOS 完成配对；之后使用已保存的绑定密钥自动重连。测试程序只连接广播名为 `PassportNotify` 的设备，发现指定服务/写入特征后发送测试消息；第三个参数可指定应用、短信或连接提示类别。
+安全的分段刷写命令如下。它只写 bootloader、分区表、OTA 元数据和 factory 门户，不执行 `erase_flash`，也不写 `nvs`、`phy_init`、`cardid`：
 
-2026-10-08 已在当前 ESP32-C3 实机上完成三次电脑 BLE 写入：首次安全配对、绑定后自动重连和事件顺序修复后的回归均返回 `PASS`；设备日志确认 `encrypted=1 authenticated=1`、消息触发音频并在断开后恢复广播。仍需人工确认屏幕中文字、提示音听感及三键行为。
+```sh
+source ~/esp/esp-idf-v5.5.3/export.sh
+python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
+  --before default_reset --after hard_reset write_flash \
+  --flash_mode dio --flash_size detect --flash_freq 80m \
+  0x0      build-slot-portal/bootloader/bootloader.bin \
+  0x8000   build-slot-portal/partition_table/partition-table.bin \
+  0x414000 build-slot-portal/ota_data_initial.bin \
+  0x420000 build-slot-portal/FoloToy-AI-Passport.bin
+```
 
-## 隐私、协议与验证边界
+> 不要把以上分段文件简单合并成从 `0x0` 写入的稠密镜像；中间填充的 `0xFF` 会覆盖 NVS、PHY、用户玩法槽和 `cardid`。需要网页刷写包时，应使用能表达多段偏移的 manifest，而不是单个 full.bin。
 
-- 自定义 BLE GATT 服务 `4a17d400-34ad-4d7b-93f8-84237aacc001`，通知写入特征 `...c002` 以及固件控制/数据/状态特征 `...c010`–`...c012` 都要求有 MITM 的认证加密配对。传输不经过互联网服务。只有勾选应用且手机桥接服务运行时才会转发。
-- 应用不请求 SMS 权限或飞书 API 登录；Android 12 以下的蓝牙扫描需要旧版定位授权，Android 12 及以上请求附近设备权限，只接收 Android 系统已发布的通知；能否读取短信验证码、飞书内容取决于该应用的通知文本、工作资料和系统策略，**不能保证**所有通知都能转发。
-- 硬件不主动写入通知内容到 NVS 或串口；最近 32 条消息只保留在 RAM，用户短按 OK 移除、确认清空或设备重启后删除。NVS 只保存静音偏好、BLE 配对信息，以及用户玩法槽的名称/大小/有效标记等元数据；不保存玩法二进制副本。此设备不是可信安全显示器，验证码等敏感操作优先用手机。
-- 单台连接、硬件合计最多保留最近 32 条消息（微信、飞书、短信等共用一个按到达时间排序的列表）；未连接时手机桥接服务的待发队列也有容量限制，无法保证送达或跨断线恢复。当前 BLE 协议只传最多 160 字节的 UTF-8 文本，**不会传送通知图片、头像或附件**；屏幕上的微信/飞书/短信标识由固件本地绘制，其他文字还受小屏尺寸和字库覆盖限制。
-- 截至 2026-10-08，当前硬件上已验证的是上一版通知链路：Samsung S25 Ultra 已完成 BLE 安全配对，Android 前台服务和通知使用权已启用，并实测两条飞书真实通知写入成功。**本次 APK 1.1、门户界面、OTA 玩法槽、特殊按键切换和 BLE 固件传输只完成了源码检查与构建，尚未安装/烧录到实机，也未做断电回滚与第三方玩法兼容测试。**
+Android APK 构建：
 
-协议：消息头 4 字节 `A5 <1=短信|2=其他|3=连接提示> <UTF-8字节数低位> <高位>`，消息正文最多 160 字节 UTF-8。根据 GATT MTU 分块，每块等待写回调；未完成包在断线时丢弃。
+```sh
+cd android-app
+JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
+  ANDROID_HOME="$HOME/Library/Android/sdk" ./gradlew clean assembleDebug lintDebug
+```
+
+当前 Debug APK：`android-app/app/build/outputs/apk/debug/app-debug.apk`，版本 `1.3.1`（versionCode 5），SHA-256：`155fb708acbdbe9758bc4a132f6fa3964ef56da946ab46f5fb100e021003d4e4`。
+
+中文字体来自 Noto Sans SC，16 px / 1 bpp，包含 GB2312 及部分界面字。授权见 `main/fonts/OFL-NotoSansSC.txt`；GB2312 以外文字和表情可能缺字。
+
+## 分区、备份与恢复
+
+当前门户分区表：
+
+| 分区 | 偏移 | 大小 | 用途 |
+|---|---:|---:|---|
+| `nvs` | `0x9000` | 24 KiB | BLE 绑定、偏好等 |
+| `phy_init` | `0xF000` | 4 KiB | RF 数据 |
+| `user_app` | `0x10000` | 4 MiB | 唯一可替换用户玩法，OTA subtype 0 |
+| `cardid` | `0x410000` | 16 KiB | 保留原设备数据位置 |
+| `otadata` | `0x414000` | 8 KiB | factory / 用户玩法切换状态 |
+| `factory` | `0x420000` | 1408 KiB | 常驻通知门户 |
+| `storage` | `0x580000` | 2560 KiB | 保留数据区 |
+
+- 原机 8 MB 全量备份：`.local-backups/ai-passport-original-flash-2026-10-08.bin`
+- 原机备份 SHA-256：`b3dce15e5737a0ac85da2194717aa2b5285b28058a04388d0ce367dfb97243c4`
+- 上游示例构建备份：`.local-backups/ai-passport-upstream-main-2026-10-08.bin`
+- 变更分区前另行读取了 NVS 和 `cardid`。门户分段刷写完成后再次回读，两者均逐字节一致：
+  - NVS SHA-256：`302abda49717baa52519f022df2a0f9408e7d725eee4ddbb12e693dfcd2d5908`
+  - `cardid` SHA-256：`34ae30647e00e78ad2c01682d6629267ba53783ee81ade0306da72f01dd9ea8d`
+
+`.local-backups/` 已被 Git 忽略。原始闪存可能包含 Wi-Fi 密码、BLE 密钥等敏感资料，不要上传、分享或提交仓库。完整恢复会覆盖设备现状，只能在再次明确确认后执行：
+
+```sh
+source ~/esp/esp-idf-v5.5.3/export.sh
+python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
+  write_flash 0x0 .local-backups/ai-passport-original-flash-2026-10-08.bin
+```
+
+## Android 连接与通知逻辑
+
+1. 安装 APK，授予“附近设备”和通知显示权限，并在系统“通知使用权”中启用“AI Passport 门户”。应用不依赖三星专用 SDK，Samsung S25 Ultra 按普通 Android 设备处理。
+2. 在“管理应用”中选择微信、飞书、短信等需要转发的应用。当前 32 条上限是**所有应用合计**，不是每个应用各 32 条；列表满时淘汰最早一条。
+3. APK 1.3.1 默认开启自动连接。首次安全配对后，应用启动、通知监听器连接、APK 更新、手机开机和蓝牙重新开启都会尝试启动前台服务并自动扫描、连接 `PassportNotify`。界面的“暂停自动连接”会明确关闭该行为；不要用 Android 的“强行停止”测试自动连接，因为系统会阻止该应用继续接收启动广播，直到用户再次打开应用。
+4. 手机发送的正文第一行是 Android 应用标签，后续行为按应用来源分组。消息保存在 AI Passport RAM 中，重启后清空，不会因超时自动删除。
+5. 消息页按键：
+   - 短按上 / 下：在当前筛选范围内浏览上一条 / 下一条。
+   - 短按 OK：在“全部”和当前已有的微信、飞书、短信等应用筛选之间循环，**不删除消息**。
+   - 长按上 3 秒：进入“清空当前应用”确认页；短按 OK 确认，只清空当前筛选应用；短按上 / 下取消。位于“全部”时会以当前消息所属应用作为清空对象。
+   - 长按下 3 秒：切换静音。静音状态只显示为顶部图标。
+   - 长按 OK 3 秒：进入屏幕、按键和声音自检。
+   - 双击 OK：进入或退出玩法门户。
+6. 无消息时才显示操作说明；有消息时隐藏说明，把空间让给消息卡片。新消息、配对码和固件传输会自动亮屏。60 秒无按键、无新通知且不处于配对/传输时自动熄屏；双击下可立即熄屏。熄屏只关闭 LCD 输出和背光，CPU、BLE 和通知接收继续运行。
+7. “显示短信正文和验证码”默认关闭。关闭时隐藏短信正文，并遮盖普通通知中的 4–8 位独立数字；需要时再主动打开，用后建议关闭。
+8. 手机待发队列有容量限制，断线期间不能保证通知补发。BLE 文本正文最多 160 字节 UTF-8；不传送通知图片、头像或附件，屏幕上的来源标识由固件本地绘制。
+
+## 固件玩法库与 Radio
+
+手机可以保存多个 `.bin`，但当前 8 MB AI Passport 只有 **1 个 4 MiB 用户玩法槽**。安装另一玩法会替换设备槽里的旧玩法，不会替换 factory 门户。
+
+APK 导入时检查 ESP 应用头、应用描述、ESP32-C3 芯片标识、4 MiB 大小上限和 SHA-256。芯片匹配不等于板级兼容，只应安装明确复用 AI Passport BSP 的应用固件；不要导入 `full.bin`、bootloader 或分区表。
+
+已针对用户槽构建 `weibaohui/aipassport-radio`：
+
+- 上游提交：`e3bd972f13c761fb6f66823e76f1ea922e903afa`
+- framework 子模块：`026ffd90aa98ba4818491d4413f50ca311809f32`
+- 应用固件：`build/user-firmware/AI-Passport-Radio-e3bd972-user-slot.bin`
+- 大小：4,051,696 字节（3.86 MiB），距离 4 MiB 上限还剩 142,608 字节
+- SHA-256：`1b7c3b3beecbf62bc59dfe60e4ced627983f9fdbfae95f2639b4d6ca35bb6a4b`
+
+Radio 为满足 4 MiB 槽位使用 size optimization、关闭运行日志、关闭断言和 LVGL 示例，保留其中文字体、网络电台和主要界面。该文件是**应用镜像**，不是从 `0x0` 刷写的整机镜像。
+
+门户中短按上 / 下选择“随身消息”或自定义玩法，选中后长按 OK 3 秒启动。Radio 自身按键来自其上游实现：播放页上 / 下切台、OK 暂停或继续，长按 OK 进入电台列表；Radio 已占用双击 OK 等组合，因此门户无法在 Radio 运行时继续接管按键。
+
+用户玩法首次启动被设置为 OTA 待确认状态。像当前 Radio 这样不调用 `esp_ota_mark_app_valid_cancel_rollback()` 的玩法，预期在下一次重启时由 bootloader 回滚到 factory 门户。这个“重启回门户”机制仍必须以真实启动和重启日志为准；第三方玩法若主动确认 OTA、改写 OTA 元数据、使用不兼容分区或无法启动，可能不能自动返回，需要 USB 恢复。
+
+固件 BLE 特征与通知位于同一加密服务：控制 `...c010`、数据 `...c011`、状态 `...c012`，均要求 MITM 认证加密。控制命令支持开始、结束、取消和清空用户槽；断线会中止未完成传输。传输期间 Android 前台服务持有临时 WakeLock。
+
+## 已验证与未验证边界（2026-10-08）
+
+已验证：
+
+- 最终门户 `1.2.1-portal` 用 ESP-IDF 5.5.3 构建成功；应用镜像大小 1,321,360 字节，factory 分区余量 120,432 字节，SHA-256：`e795a1f4dc1647e01f4871ee4e4d1e25b892f68b2fea0a13eb46cf510e82f383`。
+- 门户分区表和前一实机版门户已按分段偏移刷入当前 ESP32-C3；串口日志确认从 `0x420000` factory 分区启动、分区表正确、显示/音频/按键/BLE 初始化成功。最终 `1.2.1-portal` 仍需设备重新接入 USB 后只覆写 `0x420000` 应用段。
+- NVS 与 `cardid` 在刷写前后回读逐字节一致。
+- Android APK 1.3（versionCode 4）已在 Samsung S25 Ultra（SM-S9380）覆盖安装，蓝牙、通知权限与通知监听器保持启用；最终 1.3.1（versionCode 5）已构建并通过 `assembleDebug`、`lintDebug`，仍需手机重新接入 ADB 后覆盖安装。
+- 实测关闭再开启手机蓝牙后，无需在 APK 中手动点击连接：手机重新扫描，设备日志确认重新连接并达到 `encrypted=1 authenticated=1`。
+- Radio 应用镜像通过 ESP32-C3 image 校验并满足 4 MiB 槽位，已导入手机固件库；APK 报告 4,051,696 字节传输达到 100% 并返回“安装完成”。用户随后反馈实机测试无异常。
+- `message_store` 主机单元测试、UI 像素计算测试和 `git diff --check` 通过。
+
+仍需实机完成或补证：
+
+- Radio 用户槽回读在 72% 时因设备 USB 断开而中止，因此尚未取得设备端完整 SHA-256；不能把手机端“安装完成”当作逐字节回读校验。
+- 最终门户 `1.2.1-portal` 与 Android APK 1.3.1 的覆盖安装。
+- 重启 Radio 后确认 OTA 回滚确实返回 factory 门户。
+- 实体按键验证“短按 OK 只切换应用”和“长按上 + OK 仅清空当前应用”；源码和主机单测通过不等于按键手感已验收。
+
+## BLE 消息协议
+
+通知包头为 4 字节：`A5 <1=短信|2=其他|3=连接提示> <UTF-8 长度低位> <高位>`，正文最多 160 字节 UTF-8。Android 根据 GATT MTU 分块，每块等待写回调；未完成包在断线时丢弃。通知内容不写入 NVS 或串口；NVS 只保存静音偏好、BLE 绑定和用户槽元数据。

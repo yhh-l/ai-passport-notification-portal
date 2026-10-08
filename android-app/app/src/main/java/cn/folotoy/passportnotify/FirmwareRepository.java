@@ -24,7 +24,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public final class FirmwareRepository {
-    public static final long DEVICE_SLOT_SIZE = 0x1d0000L;
+    public static final long DEVICE_SLOT_SIZE = 0x400000L;
     private static final String PREFS = "firmware_library";
     private static final String KEY_ITEMS = "items";
     private static final int APP_DESCRIPTOR_OFFSET = 32;
@@ -48,9 +48,11 @@ public final class FirmwareRepository {
                 JSONObject json = array.getJSONObject(index);
                 File file = new File(directory, json.getString("file"));
                 if (!file.isFile()) continue;
+                String original = json.optString("original");
+                String project = json.optString("project");
+                String name = displayName(json.optString("name"), original, project);
                 items.add(new FirmwareImage(
-                        json.getString("id"), json.optString("name"),
-                        json.optString("original"), json.optString("project"),
+                        json.getString("id"), name, original, project,
                         json.optString("version"), json.optLong("size"),
                         json.optString("sha256"), json.optLong("importedAt"), file));
             }
@@ -85,7 +87,7 @@ public final class FirmwareRepository {
             while ((count = source.read(buffer)) != -1) {
                 size += count;
                 if (size > DEVICE_SLOT_SIZE) {
-                    throw new IOException("固件超过设备玩法槽上限 1.81 MiB");
+                    throw new IOException("固件超过设备玩法槽上限 4.00 MiB");
                 }
                 digest.update(buffer, 0, count);
                 target.write(buffer, 0, count);
@@ -127,8 +129,7 @@ public final class FirmwareRepository {
         String id = sha256.substring(0, 16);
         String project = cString(header, 80, 32);
         String version = cString(header, 48, 32);
-        String baseName = originalName.substring(0, originalName.length() - 4);
-        String name = project.isBlank() ? baseName : project;
+        String name = displayName(project, originalName, project);
         File destination = new File(directory, id + ".bin");
         if (destination.exists()) destination.delete();
         if (!temporary.renameTo(destination)) {
@@ -188,6 +189,23 @@ public final class FirmwareRepository {
         } catch (RuntimeException ignored) { }
         String last = uri.getLastPathSegment();
         return last == null || last.isBlank() ? "firmware.bin" : last;
+    }
+
+    private static String displayName(String storedName, String originalName, String project) {
+        String name = storedName == null ? "" : storedName.trim();
+        boolean genericProject = "FoloToy-AI-Passport".equalsIgnoreCase(project) ||
+                "FoloToy-AI-Passport".equalsIgnoreCase(name);
+        if (!name.isBlank() && !genericProject) return name;
+
+        String fileName = originalName == null ? "" : originalName.trim();
+        if (fileName.toLowerCase(Locale.ROOT).endsWith(".bin")) {
+            fileName = fileName.substring(0, fileName.length() - 4);
+        }
+        if (fileName.endsWith("-user-slot")) {
+            fileName = fileName.substring(0, fileName.length() - "-user-slot".length());
+        }
+        if (!fileName.isBlank()) return fileName;
+        return project == null || project.isBlank() ? "自定义玩法" : project;
     }
 
     private static String cString(byte[] data, int offset, int length) {
