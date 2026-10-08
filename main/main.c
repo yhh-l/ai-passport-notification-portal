@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "lvgl.h"
 #include "message_store.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include <stdio.h>
 
@@ -15,9 +16,10 @@ extern const lv_font_t font_chinese_16;
 static const char *TAG = "passport_notify";
 static lv_obj_t *s_message_label, *s_link_label, *s_alert_label, *s_category_label;
 static message_store_t s_messages;
-static uint32_t s_overlay_until;
+static uint32_t s_overlay_until, s_hint_until;
 static uint32_t s_last_code = UINT32_MAX;
-static bool s_overlay_active, s_muted, s_audio_ready;
+static bool s_overlay_active, s_hint_active, s_clear_confirmation;
+static bool s_muted, s_audio_ready, s_nvs_ready;
 static esp_err_t s_ble_error;
 
 static lv_obj_t *label(lv_obj_t *parent, const char *text, int x, int y,
@@ -59,8 +61,8 @@ static void show_current_message(void)
 {
     const app_message_t *message = message_store_current(&s_messages);
     if (!message) {
-        lv_label_set_text(s_category_label, "最新消息");
-        lv_label_set_text(s_message_label, "等待手机通知...");
+        lv_label_set_text(s_category_label, "消息中心 · 0");
+        lv_label_set_text(s_message_label, "暂无消息\n等待手机通知...");
         return;
     }
 
@@ -89,7 +91,40 @@ static void cancel_overlay(void)
 static void update_audio_status(void)
 {
     lv_label_set_text(s_alert_label,
-                      s_muted ? "静音 · 长按下键恢复" : "声音开 · 长按下键静音");
+                      s_muted ? "已静音 · 长按下键恢复" : "提示音开 · 长按下键静音");
+}
+
+static void show_hint(const char *text, uint32_t duration_ms)
+{
+    s_hint_active = true;
+    s_hint_until = lv_tick_get() + duration_ms;
+    lv_label_set_text(s_alert_label, text);
+}
+
+static void load_preferences(void)
+{
+    if (!s_nvs_ready) return;
+    nvs_handle_t handle;
+    if (nvs_open("notify_ui", NVS_READONLY, &handle) != ESP_OK) return;
+    uint8_t muted = 0;
+    if (nvs_get_u8(handle, "muted", &muted) == ESP_OK) s_muted = muted != 0;
+    nvs_close(handle);
+}
+
+static void save_muted_preference(void)
+{
+    if (!s_nvs_ready) return;
+    nvs_handle_t handle;
+    if (nvs_open("notify_ui", NVS_READWRITE, &handle) != ESP_OK) return;
+    if (nvs_set_u8(handle, "muted", s_muted ? 1 : 0) == ESP_OK) nvs_commit(handle);
+    nvs_close(handle);
+}
+
+static void cancel_clear_confirmation(void)
+{
+    s_clear_confirmation = false;
+    cancel_overlay();
+    show_current_message();
 }
 
 static void tick(lv_timer_t *timer)
@@ -98,17 +133,37 @@ static void tick(lv_timer_t *timer)
     uint32_t now = lv_tick_get();
     app_message_t message;
     while (app_ble_receive(&message)) {
+        // Connection state is transient UI, not an inbox item. This prevents
+        // reconnects from displacing real phone notifications.
+        if (message.type == 3) {
+            s_clear_confirmation = false;
+            show_overlay("连接提示", message.text, 3500);
+            continue;
+        }
+
         // Sensitive messages remain only in this bounded RAM history. They are
         // never logged or persisted, and are removed only by explicit controls.
-        message_store_push(&s_messages, &message);
+        bool dropped_oldest = message_store_push(&s_messages, &message);
+        s_clear_confirmation = false;
         cancel_overlay();
         show_current_message();
+        if (dropped_oldest) {
+            show_hint("消息已满 · 已移除最早一条", 2200);
+        } else {
+            show_hint("收到新消息", 1200);
+        }
         if (s_audio_ready && !s_muted) app_alert_play();
     }
 
     if (s_overlay_active && (int32_t)(now - s_overlay_until) >= 0) {
+        s_clear_confirmation = false;
         cancel_overlay();
         show_current_message();
+    }
+    if (s_hint_active && (int32_t)(now - s_hint_until) >= 0) {
+        s_hint_active = false;
+        s_hint_until = 0;
+        update_audio_status();
     }
 
     uint32_t code = app_ble_passkey();
@@ -133,26 +188,56 @@ static void on_key(bsp_btn_t btn, bsp_btn_ev_t ev, void *user)
     if (!bsp_lvgl_lock(200)) return;
 
     if (ev == BSP_BTN_CLICK) {
+        if (s_clear_confirmation) {
+            if (btn == BSP_BTN_OK) {
+                s_clear_confirmation = false;
+                message_store_clear(&s_messages);
+                show_overlay("消息管理", "全部消息已清空", 1800);
+            } else {
+                cancel_clear_confirmation();
+                show_hint("已取消清空", 1200);
+            }
+            bsp_lvgl_unlock();
+            return;
+        }
+
         cancel_overlay();
         if (btn == BSP_BTN_UP) {
-            message_store_previous(&s_messages);
+            if (message_store_count(&s_messages) == 0) show_hint("暂无消息", 1200);
+            else if (!message_store_previous(&s_messages)) show_hint("已经是第一条", 1200);
             show_current_message();
         } else if (btn == BSP_BTN_DOWN) {
-            message_store_next(&s_messages);
+            if (message_store_count(&s_messages) == 0) show_hint("暂无消息", 1200);
+            else if (!message_store_next(&s_messages)) show_hint("已经是最新一条", 1200);
             show_current_message();
         } else if (btn == BSP_BTN_OK) {
-            message_store_dismiss_current(&s_messages);
-            show_current_message();
+            if (message_store_dismiss_current(&s_messages)) {
+                show_current_message();
+                char hint[40];
+                snprintf(hint, sizeof(hint), "已处理 · 剩余 %u 条",
+                         (unsigned)message_store_count(&s_messages));
+                show_hint(hint, 1600);
+            } else {
+                show_hint("暂无可处理消息", 1200);
+            }
         }
     } else if (ev == BSP_BTN_LONG) {
         if (btn == BSP_BTN_UP) {
-            message_store_clear(&s_messages);
-            show_overlay("消息管理", "全部消息已清除", 2500);
+            if (message_store_count(&s_messages) == 0) {
+                show_hint("暂无消息", 1200);
+            } else {
+                s_clear_confirmation = true;
+                show_overlay("确认清空全部？", "短按 OK：确认清空\n按上/下键：取消", 6000);
+            }
         } else if (btn == BSP_BTN_DOWN) {
+            if (s_clear_confirmation) cancel_clear_confirmation();
             s_muted = !s_muted;
             app_alert_set_enabled(!s_muted);
+            save_muted_preference();
+            s_hint_active = false;
             update_audio_status();
         } else if (btn == BSP_BTN_OK) {
+            s_clear_confirmation = false;
             show_overlay("设备自检",
                          s_muted ? "屏幕与按键正常 · 当前静音" : "屏幕、按键与提示音正常",
                          5000);
@@ -174,13 +259,14 @@ static void build_ui(void)
     s_link_label = label(scr, "等待连接 · PassportNotify", 16, 45, 208, 40,
                          0x94C5E8, LV_TEXT_ALIGN_LEFT);
     lv_obj_t *box = panel(scr, 12, 93, 216, 170, 13, 0x243443);
-    s_category_label = label(box, "最新消息", 14, 14, 188, 27, 0x88D9C2,
+    s_category_label = label(box, "消息中心 · 0", 14, 14, 188, 27, 0x88D9C2,
                              LV_TEXT_ALIGN_LEFT);
-    s_message_label = label(box, "等待手机通知...", 14, 51, 188, 105, 0xFFFFFF,
+    s_message_label = label(box, "暂无消息\n等待手机通知...", 14, 51, 188, 105, 0xFFFFFF,
                             LV_TEXT_ALIGN_LEFT);
-    s_alert_label = label(scr, "声音开 · 长按下键静音", 8, 269, 224, 22, 0x95AFC2,
+    s_alert_label = label(scr, "", 8, 269, 224, 22, 0x95AFC2,
                           LV_TEXT_ALIGN_CENTER);
-    label(scr, "短按 上前 下后 OK删除", 6, 295, 228, 22, 0x95AFC2,
+    update_audio_status();
+    label(scr, "短按 上前 下后 OK处理", 6, 295, 228, 22, 0x95AFC2,
           LV_TEXT_ALIGN_CENTER);
     lv_screen_load(scr);
     lv_timer_create(tick, 200, NULL);
@@ -195,16 +281,22 @@ void app_main(void)
         return;
     }
     bsp_display_backlight(85);
-    // BLE bonding needs NVS. Do not erase any existing device data on failure.
+    // BLE bonding and the non-sensitive mute preference need NVS. Do not erase
+    // any existing device data if NVS initialization fails.
     esp_err_t nvs_error = nvs_flash_init();
-    if (nvs_error != ESP_OK) ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(nvs_error));
+    s_nvs_ready = nvs_error == ESP_OK;
+    if (!s_nvs_ready) ESP_LOGE(TAG, "NVS init failed: %s", esp_err_to_name(nvs_error));
+    load_preferences();
     s_audio_ready = bsp_audio_init() == ESP_OK;
-    if (s_audio_ready) app_alert_start();
+    if (s_audio_ready) {
+        app_alert_start();
+        app_alert_set_enabled(!s_muted);
+    }
     if (bsp_lvgl_lock(1000)) {
         build_ui();
         bsp_lvgl_unlock();
     }
-    if (nvs_error == ESP_OK) s_ble_error = app_ble_start();
+    if (s_nvs_ready) s_ble_error = app_ble_start();
     else s_ble_error = nvs_error;
     if (s_ble_error != ESP_OK) ESP_LOGE(TAG, "BLE start failed: %s", esp_err_to_name(s_ble_error));
     esp_err_t err = bsp_button_init(on_key, NULL);

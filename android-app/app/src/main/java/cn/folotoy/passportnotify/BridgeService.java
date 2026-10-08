@@ -44,16 +44,18 @@ public class BridgeService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Queue<byte[]> packets = new ArrayDeque<>();
     private BluetoothLeScanner scanner;
-    private BluetoothGatt gatt;
-    private BluetoothGattCharacteristic characteristic;
+    private volatile BluetoothGatt gatt;
+    private volatile BluetoothGattCharacteristic characteristic;
     private byte[] current;
     private int offset;
     private int mtu = 23;
     private boolean scanning, writing, mtuPending, connectedGreetingSent;
 
-    public static void publish(int type, String text) {
+    public static boolean publish(int type, String text) {
         BridgeService service = instance;
-        if (service != null) service.handler.post(() -> service.enqueue(type, text));
+        if (service == null || service.gatt == null || service.characteristic == null) return false;
+        service.handler.post(() -> service.enqueue(type, text));
+        return true;
     }
     @Override public IBinder onBind(Intent intent) { return null; }
     @Override public void onCreate() {

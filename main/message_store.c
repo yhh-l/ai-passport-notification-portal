@@ -6,16 +6,20 @@ void message_store_init(message_store_t *store)
     if (store) memset(store, 0, sizeof(*store));
 }
 
-void message_store_push(message_store_t *store, const app_message_t *message)
+bool message_store_push(message_store_t *store, const app_message_t *message)
 {
-    if (!store || !message) return;
-    if (store->count == MESSAGE_STORE_CAPACITY) {
+    if (!store || !message) return false;
+
+    bool dropped = store->count == MESSAGE_STORE_CAPACITY;
+    if (dropped) {
+        memset(&store->items[0], 0, sizeof(store->items[0]));
         memmove(&store->items[0], &store->items[1],
                 (MESSAGE_STORE_CAPACITY - 1) * sizeof(store->items[0]));
         store->count--;
     }
     store->items[store->count++] = *message;
     store->current = store->count - 1;
+    return dropped;
 }
 
 const app_message_t *message_store_current(const message_store_t *store)

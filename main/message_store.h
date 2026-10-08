@@ -13,7 +13,8 @@ typedef struct {
 } message_store_t;
 
 void message_store_init(message_store_t *store);
-void message_store_push(message_store_t *store, const app_message_t *message);
+// Returns true only when adding the item evicted the oldest stored message.
+bool message_store_push(message_store_t *store, const app_message_t *message);
 const app_message_t *message_store_current(const message_store_t *store);
 bool message_store_previous(message_store_t *store);
 bool message_store_next(message_store_t *store);

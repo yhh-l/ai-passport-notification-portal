@@ -34,7 +34,7 @@ public class MainActivity extends Activity {
         scroll.addView(root);
         setContentView(scroll);
         TextView intro = new TextView(this);
-        intro.setText("AI Passport · 随身消息\n\n1. 在设备上打开固件（等待 PassportNotify）\n2. 授权蓝牙和通知使用权\n3. 勾选要显示通知的应用，点击连接\n4. 手机输入设备屏幕显示的六位配对码\n\n消息仅通过本机蓝牙发送，不上传服务器；设备收到后自动清除显示。");
+        intro.setText("AI Passport · 随身消息\n\n1. 在设备上打开固件（等待 PassportNotify）\n2. 授权蓝牙和通知使用权\n3. 勾选要显示通知的应用，点击连接\n4. 手机输入设备屏幕显示的六位配对码\n\n消息仅通过本机蓝牙发送，不上传服务器；通知会留在设备中，短按 OK 后才移除。");
         intro.setTextSize(17);
         root.addView(intro);
         button(root, "授予蓝牙权限", v -> requestBluetoothPermissions());
@@ -62,7 +62,7 @@ public class MainActivity extends Activity {
             Intent intent = new Intent(this, BridgeService.class).setAction(BridgeService.START);
             startForegroundService(intent);
         });
-        button(root, "发送测试消息到设备", v -> BridgeService.publish(3, "连接测试 · 手机通知桥正常"));
+        button(root, "发送测试消息到设备", v -> BridgeService.publish(2, "通知桥测试\n手机通知传输正常"));
         button(root, "停止连接", v -> stopService(new Intent(this, BridgeService.class)));
         CheckBox otp = new CheckBox(this);
         otp.setText("在设备屏幕显示短信内容 / 验证码（默认关闭）");

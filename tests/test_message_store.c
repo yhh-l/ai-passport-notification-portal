@@ -18,8 +18,8 @@ int main(void)
 
     app_message_t first = message(2, "first");
     app_message_t second = message(1, "second");
-    message_store_push(&store, &first);
-    message_store_push(&store, &second);
+    assert(!message_store_push(&store, &first));
+    assert(!message_store_push(&store, &second));
     assert(message_store_count(&store) == 2);
     assert(message_store_current_number(&store) == 2);
     assert(strcmp(message_store_current(&store)->text, "second") == 0);
@@ -40,7 +40,8 @@ int main(void)
         char text[16];
         snprintf(text, sizeof(text), "item-%d", i);
         app_message_t item = message(2, text);
-        message_store_push(&store, &item);
+        bool dropped_oldest = message_store_push(&store, &item);
+        assert(dropped_oldest == (i >= MESSAGE_STORE_CAPACITY));
     }
     assert(message_store_count(&store) == MESSAGE_STORE_CAPACITY);
     assert(strcmp(store.items[0].text, "item-2") == 0);
