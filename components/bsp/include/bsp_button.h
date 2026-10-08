@@ -4,6 +4,10 @@
 
 #include "esp_err.h"
 
+// Notification UI uses an intentional three-second hold to avoid accidental
+// mute/clear actions while browsing messages with short presses.
+#define BSP_BTN_LONG_PRESS_MS 3000
+
 // 按键索引。数量用 bsp_pins.h 的 BSP_BTN_COUNT(硬件属性,归引脚表管),
 // 这里不再定义尾项计数,避免出现 BSP_BTN_COUNT / BSP_BTN_COUNT_ 两个近似名字。
 typedef enum {
