@@ -60,6 +60,8 @@
 xcrun swiftc -framework Foundation -framework CoreBluetooth \
   tools/macos_ble_test.swift -o /tmp/passport_ble_test
 /tmp/passport_ble_test "电脑蓝牙测试 · AI Passport 正常"
+# 第二个参数可选：保持加密连接的秒数，便于观察“已安全配对”状态
+/tmp/passport_ble_test "电脑蓝牙保持连接测试" 300
 ```
 
 首次连接使用 BLE Secure Connections + MITM：AI Passport 显示六位码，由 macOS 完成配对；之后使用已保存的绑定密钥自动重连。测试程序只连接广播名为 `PassportNotify` 的设备，发现指定服务/写入特征后发送类型 3 测试消息。

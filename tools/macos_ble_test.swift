@@ -10,8 +10,11 @@ final class PassportBleTest: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private var packet = Data()
     private var offset = 0
     private var retryCount = 0
+    private var holdSeconds: TimeInterval = 0
+    private var writeCompleted = false
 
-    func run(message: String) {
+    func run(message: String, holdSeconds: TimeInterval) {
+        self.holdSeconds = max(0, holdSeconds)
         var body = Data()
         for character in message {
             let bytes = Data(String(character).utf8)
@@ -82,7 +85,18 @@ final class PassportBleTest: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     private func writeNext(_ peripheral: CBPeripheral) {
         guard let characteristic else { return }
         if offset >= packet.count {
-            finish("PASS：电脑已通过 BLE 写入测试消息", code: 0)
+            guard !writeCompleted else { return }
+            writeCompleted = true
+            print("PASS：电脑已通过 BLE 写入测试消息")
+            if holdSeconds > 0 {
+                print("保持加密连接 \(Int(holdSeconds)) 秒，便于观察设备连接状态和屏幕…")
+                fflush(stdout)
+                DispatchQueue.main.asyncAfter(deadline: .now() + holdSeconds) { [weak self] in
+                    self?.finish("电脑 BLE 保持连接测试结束", code: 0)
+                }
+                return
+            }
+            finish("电脑 BLE 单次发送测试结束", code: 0)
         }
         let maximum = max(1, peripheral.maximumWriteValueLength(for: .withResponse))
         let end = min(offset + maximum, packet.count)
@@ -115,5 +129,7 @@ final class PassportBleTest: NSObject, CBCentralManagerDelegate, CBPeripheralDel
     }
 }
 
-let message = CommandLine.arguments.dropFirst().first ?? "电脑蓝牙测试 · AI Passport 正常"
-PassportBleTest().run(message: message)
+let arguments = Array(CommandLine.arguments.dropFirst())
+let message = arguments.first ?? "电脑蓝牙测试 · AI Passport 正常"
+let holdSeconds = arguments.count > 1 ? (TimeInterval(arguments[1]) ?? 0) : 0
+PassportBleTest().run(message: message, holdSeconds: holdSeconds)
