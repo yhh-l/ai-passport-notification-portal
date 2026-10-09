@@ -27,6 +27,6 @@ public final class FirmwareImage {
     }
 
     public String displayName() {
-        return name == null || name.isBlank() ? originalName : name;
+        return name == null || name.trim().isEmpty() ? originalName : name;
     }
 }

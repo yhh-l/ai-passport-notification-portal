@@ -184,18 +184,18 @@ public final class FirmwareRepository {
                 new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
             if (cursor != null && cursor.moveToFirst()) {
                 String value = cursor.getString(0);
-                if (value != null && !value.isBlank()) return value;
+                if (value != null && !value.trim().isEmpty()) return value;
             }
         } catch (RuntimeException ignored) { }
         String last = uri.getLastPathSegment();
-        return last == null || last.isBlank() ? "firmware.bin" : last;
+        return last == null || last.trim().isEmpty() ? "firmware.bin" : last;
     }
 
     private static String displayName(String storedName, String originalName, String project) {
         String name = storedName == null ? "" : storedName.trim();
         boolean genericProject = "FoloToy-AI-Passport".equalsIgnoreCase(project) ||
                 "FoloToy-AI-Passport".equalsIgnoreCase(name);
-        if (!name.isBlank() && !genericProject) return name;
+        if (!name.trim().isEmpty() && !genericProject) return name;
 
         String fileName = originalName == null ? "" : originalName.trim();
         if (fileName.toLowerCase(Locale.ROOT).endsWith(".bin")) {
@@ -204,8 +204,8 @@ public final class FirmwareRepository {
         if (fileName.endsWith("-user-slot")) {
             fileName = fileName.substring(0, fileName.length() - "-user-slot".length());
         }
-        if (!fileName.isBlank()) return fileName;
-        return project == null || project.isBlank() ? "自定义玩法" : project;
+        if (!fileName.trim().isEmpty()) return fileName;
+        return project == null || project.trim().isEmpty() ? "自定义玩法" : project;
     }
 
     private static String cString(byte[] data, int offset, int length) {

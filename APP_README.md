@@ -33,15 +33,15 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
 
 > 不要把以上分段文件简单合并成从 `0x0` 写入的稠密镜像；中间填充的 `0xFF` 会覆盖 NVS、PHY、用户玩法槽和 `cardid`。需要网页刷写包时，应使用能表达多段偏移的 manifest，而不是单个 full.bin。
 
-Android APK 构建：
+Android Release APK 构建与签名验证：
 
 ```sh
 cd android-app
 JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
-  ANDROID_HOME="$HOME/Library/Android/sdk" ./gradlew clean assembleDebug lintDebug
+  ANDROID_HOME="$HOME/Library/Android/sdk" ./tools/package_release.sh
 ```
 
-当前 Debug APK：`android-app/app/build/outputs/apk/debug/app-debug.apk`，版本 `1.3.1`（versionCode 5），SHA-256：`155fb708acbdbe9758bc4a132f6fa3964ef56da946ab46f5fb100e021003d4e4`。
+正式通用 APK：`android-app/dist/AI-Passport-Portal-Android-1.4.0.apk`，版本 `1.4.0`（versionCode 6），支持 Android 8.0 / API 26 及以上，SHA-256：`47fc1710eea610b7b1318a2d2b6eda6de69d2f3c4679f22ab91588cdafab46d9`。私有密钥和 `release-signing.properties` 均被 Git 忽略；发布方法见 `android-app/RELEASING.md`。
 
 中文字体来自 Noto Sans SC，16 px / 1 bpp，包含 GB2312 及部分界面字。授权见 `main/fonts/OFL-NotoSansSC.txt`；GB2312 以外文字和表情可能缺字。
 
@@ -76,9 +76,9 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
 
 ## Android 连接与通知逻辑
 
-1. 安装 APK，授予“附近设备”和通知显示权限，并在系统“通知使用权”中启用“AI Passport 门户”。应用不依赖三星专用 SDK，Samsung S25 Ultra 按普通 Android 设备处理。
-2. 在“管理应用”中选择微信、飞书、短信等需要转发的应用。当前 32 条上限是**所有应用合计**，不是每个应用各 32 条；列表满时淘汰最早一条。
-3. APK 1.3.1 默认开启自动连接。首次安全配对后，应用启动、通知监听器连接、APK 更新、手机开机和蓝牙重新开启都会尝试启动前台服务并自动扫描、连接 `PassportNotify`。界面的“暂停自动连接”会明确关闭该行为；不要用 Android 的“强行停止”测试自动连接，因为系统会阻止该应用继续接收启动广播，直到用户再次打开应用。
+1. 安装 APK 后点击“快速启用”。应用会依次检查附近设备/定位权限、蓝牙、通知使用权、通知应用选择和设备连接，并自动跳过已完成步骤。Android 仍要求用户本人确认权限、通知使用权和首次安全配对，APK 无法静默绕过。应用不依赖三星专用 SDK，Samsung S25 Ultra 按普通 Android 设备处理。
+2. 可一键勾选本机已安装的微信、飞书/Lark、默认短信、QQ、钉钉、WhatsApp、Telegram，也可在“管理应用”中手动调整。当前 32 条上限是**所有应用合计**，不是每个应用各 32 条；列表满时淘汰最早一条。
+3. APK 1.4.0 默认开启自动连接。首次安全配对后，应用启动、通知监听器连接、APK 更新、手机开机和蓝牙重新开启都会尝试启动前台服务并自动扫描、连接 `PassportNotify`。界面的“暂停自动连接”会明确关闭该行为；不要用 Android 的“强行停止”测试自动连接，因为系统会阻止该应用继续接收启动广播，直到用户再次打开应用。
 4. 手机发送的正文第一行是 Android 应用标签，后续行为按应用来源分组。消息保存在 AI Passport RAM 中，重启后清空，不会因超时自动删除。
 5. 消息页按键：
    - 短按上 / 下：在当前筛选范围内浏览上一条 / 下一条。
@@ -120,7 +120,7 @@ Radio 为满足 4 MiB 槽位使用 size optimization、关闭运行日志、关�
 - 最终门户 `1.2.1-portal` 用 ESP-IDF 5.5.3 构建成功；应用镜像大小 1,321,360 字节，factory 分区余量 120,432 字节，SHA-256：`e795a1f4dc1647e01f4871ee4e4d1e25b892f68b2fea0a13eb46cf510e82f383`。
 - 门户分区表和前一实机版门户已按分段偏移刷入当前 ESP32-C3；串口日志确认从 `0x420000` factory 分区启动、分区表正确、显示/音频/按键/BLE 初始化成功。最终 `1.2.1-portal` 仍需设备重新接入 USB 后只覆写 `0x420000` 应用段。
 - NVS 与 `cardid` 在刷写前后回读逐字节一致。
-- Android APK 1.3（versionCode 4）已在 Samsung S25 Ultra（SM-S9380）覆盖安装，蓝牙、通知权限与通知监听器保持启用；最终 1.3.1（versionCode 5）已构建并通过 `assembleDebug`、`lintDebug`，仍需手机重新接入 ADB 后覆盖安装。
+- Android APK 1.3（versionCode 4）曾在 Samsung S25 Ultra（SM-S9380）完成实机链路验证。当前 1.4.0（versionCode 6）已构建为独立发布密钥签名的通用 APK，通过 `assembleDebug`、`lintDebug`、`assembleRelease`、`lintRelease` 与 `apksigner` 验证；最低 API 26、目标 API 36。该精确 1.4.0 包尚未在真机重新安装。
 - 实测关闭再开启手机蓝牙后，无需在 APK 中手动点击连接：手机重新扫描，设备日志确认重新连接并达到 `encrypted=1 authenticated=1`。
 - Radio 应用镜像通过 ESP32-C3 image 校验并满足 4 MiB 槽位，已导入手机固件库；APK 报告 4,051,696 字节传输达到 100% 并返回“安装完成”。用户随后反馈实机测试无异常。
 - `message_store` 主机单元测试、UI 像素计算测试和 `git diff --check` 通过。
@@ -128,7 +128,7 @@ Radio 为满足 4 MiB 槽位使用 size optimization、关闭运行日志、关�
 仍需实机完成或补证：
 
 - Radio 用户槽回读在 72% 时因设备 USB 断开而中止，因此尚未取得设备端完整 SHA-256；不能把手机端“安装完成”当作逐字节回读校验。
-- 最终门户 `1.2.1-portal` 与 Android APK 1.3.1 的覆盖安装。
+- 最终门户 `1.2.1-portal` 与 Android APK 1.4.0 的真机安装；旧 Debug 签名与新 Release 签名不同，测试手机需要先卸载旧 Debug 版再安装正式版。
 - 重启 Radio 后确认 OTA 回滚确实返回 factory 门户。
 - 实体按键验证“短按 OK 只切换应用”和“长按上 + OK 仅清空当前应用”；源码和主机单测通过不等于按键手感已验收。
 

@@ -70,7 +70,7 @@ Android 端使用标准系统 API。开发测试所用的 Samsung S25 Ultra 与�
 - ESP-IDF 5.5.x；本项目已用 ESP-IDF 5.5.3 构建
 - Android Studio/SDK，compile SDK 36
 - JDK 17
-- Android 9（API 28）及以上，并支持 BLE
+- Android 8.0（API 26）及以上，并支持 BLE
 
 ### 构建常驻门户
 
@@ -82,28 +82,33 @@ idf.py -B build-slot-portal build
 
 **不要**把各分段产物拼成带空洞填充的镜像后从 `0x0` 整体烧录，否则可能覆盖 NVS、BLE 配对密钥、`cardid` 和用户玩法槽。请严格使用 [APP_README.md](APP_README.md) 中带偏移的安全刷写命令和备份说明。
 
-### 构建 Android APK
+### 安装或构建 Android APK
+
+可直接从 [GitHub Releases](https://github.com/yhh-l/ai-passport-notification-portal/releases/latest) 下载已签名的通用 APK。应用不包含按 CPU 架构区分的原生库，ARM 和 x86 Android 设备使用同一个安装包。
+
+需要自行发布时，先按照 [android-app/RELEASING.md](android-app/RELEASING.md) 配置私有签名，再运行：
 
 ```sh
 cd android-app
 JAVA_HOME=/path/to/jdk17 \
 ANDROID_HOME=/path/to/android-sdk \
-./gradlew clean assembleDebug lintDebug
+./tools/package_release.sh
 ```
 
-Debug APK 输出位置：
+Release APK 输出位置：
 
 ```text
-android-app/app/build/outputs/apk/debug/app-debug.apk
+android-app/dist/AI-Passport-Portal-Android-1.4.0.apk
 ```
 
 ### 首次连接
 
-1. 安装 APK，授予“附近设备”和应用通知权限。
-2. 在 Android 系统“通知使用权”中启用“AI Passport 门户”。
-3. 打开 AI Passport，完成第一次安全蓝牙配对。
-4. 在“管理应用”中选择允许转发通知的应用。
-5. 先点击“发送测试消息”，确认链路正常后再测试真实通知。
+1. 安装并打开 APK，点击“快速启用”中的“继续完成设置”。
+2. 按引导完成附近设备、蓝牙、通知使用权和通知应用选择；已完成的步骤会自动跳过。
+3. 打开 AI Passport，并在 Android 弹窗中确认第一次安全蓝牙配对。
+4. 先点击“发送测试消息”，确认链路正常后再测试真实通知。
+
+Android 强制要求用户本人确认运行时权限、通知使用权和首次蓝牙配对，APK 无法静默绕过这些系统安全确认。
 
 首次安全配对完成后，应用通常会自行重连。Android 的“强行停止”会禁止后台接收器继续启动，直到用户再次手动打开应用，因此不要用“强行停止”测试自动连接。
 
@@ -142,7 +147,7 @@ APP_README*.md               构建、刷写、恢复和验证边界详细说明
 截至 **2026 年 10 月 9 日**：
 
 - 常驻门户 `1.2.1-portal` 已使用 ESP-IDF 5.5.3 构建成功。
-- Android 应用 `1.3.1`（`versionCode 5`）已构建并通过 `lintDebug`。
+- Android 应用 `1.4.0`（`versionCode 6`）已构建为适用于 API 26–36 的签名通用 APK，并通过 `lintDebug` / `lintRelease`（0 error）。
 - Samsung S25 Ultra 上实测关闭再开启手机蓝牙后，能够自动恢复经过认证和加密的连接。
 - 通知浏览、自动亮屏/熄屏、应用筛选、按应用清空和用户固件传输已进行真机体验，用户反馈当前测试流程正常。
 - `message_store` 与 UI 计算主机测试通过。
@@ -166,11 +171,12 @@ source ~/esp/esp-idf-v5.5.3/export.sh
 idf.py -B build-slot-portal build
 ```
 
-Android 最低验证：
+Android 验证：
 
 ```sh
 cd android-app
 ./gradlew assembleDebug lintDebug
+./tools/package_release.sh
 ```
 
 ## 许可证与致谢

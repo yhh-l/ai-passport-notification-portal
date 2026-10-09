@@ -7,6 +7,7 @@ import android.app.AlertDialog;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -15,10 +16,12 @@ import android.content.pm.ResolveInfo;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.location.LocationManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.provider.Settings;
+import android.provider.Telephony;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -34,6 +37,7 @@ import android.widget.Toast;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -52,6 +56,8 @@ public class MainActivity extends Activity {
     private static final int COLOR_MUTED = Color.rgb(145, 169, 185);
 
     private FirmwareRepository firmwareRepository;
+    private TextView setupStatus;
+    private Button setupButton;
     private TextView connectionStatus;
     private TextView connectionDetail;
     private TextView slotStatus;
@@ -62,6 +68,7 @@ public class MainActivity extends Activity {
     private Button connectButton;
     private Button testButton;
     private Button clearSlotButton;
+    private Button toggleAppsButton;
     private boolean appListExpanded;
     private boolean receiverRegistered;
 
@@ -77,6 +84,7 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(COLOR_BACKGROUND);
         firmwareRepository = new FirmwareRepository(this);
         setContentView(buildContent());
+        refreshSetupState();
         refreshConnectionState();
         refreshFirmwareList();
         startBridge(false);
@@ -92,8 +100,15 @@ public class MainActivity extends Activity {
             registerReceiver(statusReceiver, filter);
         }
         receiverRegistered = true;
+        refreshSetupState();
         refreshConnectionState();
         refreshSelectedApps();
+        startBridge(false);
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        refreshSetupState();
         startBridge(false);
     }
 
@@ -136,6 +151,36 @@ public class MainActivity extends Activity {
         privacyParams.topMargin = dp(12);
         root.addView(privacy, privacyParams);
 
+        root.addView(sectionTitle("首次使用"));
+        LinearLayout setupCard = card();
+        LinearLayout setupHeader = horizontal();
+        setupHeader.setGravity(Gravity.CENTER_VERTICAL);
+        setupHeader.addView(text("快速启用", 18, COLOR_TEXT, true),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        setupHeader.addView(badge("Android 8+", COLOR_CARD_ALT, COLOR_PRIMARY));
+        setupCard.addView(setupHeader);
+        TextView setupIntro = text(
+                "按顺序完成系统权限、通知使用权、应用选择和设备连接。已完成的步骤会自动跳过。",
+                13, COLOR_MUTED, false);
+        setupIntro.setPadding(0, dp(9), 0, 0);
+        setupCard.addView(setupIntro);
+        setupStatus = text("正在检查手机设置…", 14, COLOR_TEXT, false);
+        setupStatus.setLineSpacing(dp(3), 1.08f);
+        setupStatus.setPadding(0, dp(14), 0, dp(4));
+        setupCard.addView(setupStatus);
+        setupButton = actionButton("一键开始设置", COLOR_PRIMARY, Color.rgb(7, 32, 28),
+                view -> advanceSetup());
+        LinearLayout.LayoutParams setupButtonParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+        setupButtonParams.topMargin = dp(12);
+        setupCard.addView(setupButton, setupButtonParams);
+        Button appSettings = outlineButton("权限或后台运行有问题？打开系统应用设置",
+                view -> openApplicationSettings());
+        LinearLayout.LayoutParams appSettingsParams = matchWrap();
+        appSettingsParams.topMargin = dp(8);
+        setupCard.addView(appSettings, appSettingsParams);
+        root.addView(setupCard);
+
         root.addView(sectionTitle("设备连接"));
         LinearLayout deviceCard = card();
         LinearLayout statusRow = horizontal();
@@ -175,10 +220,9 @@ public class MainActivity extends Activity {
 
         LinearLayout permissionActions = horizontal();
         permissionActions.setPadding(0, dp(8), 0, 0);
-        permissionActions.addView(outlineButton("授权蓝牙", view -> requestBluetoothPermissions()),
+        permissionActions.addView(outlineButton("重新检查权限", view -> advanceSetup()),
                 weightedButton(false));
-        permissionActions.addView(outlineButton("通知使用权", view ->
-                        startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))),
+        permissionActions.addView(outlineButton("通知使用权", view -> openNotificationAccess()),
                 weightedButton(true));
         deviceCard.addView(permissionActions);
         Button stop = outlineButton("暂停自动连接", view -> {
@@ -217,14 +261,17 @@ public class MainActivity extends Activity {
         selectedAppsText = text("已选择 0 个应用", 15, COLOR_TEXT, true);
         appsHeader.addView(selectedAppsText, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button toggleApps = compactButton("管理应用", view -> {
-            appListExpanded = !appListExpanded;
-            appList.setVisibility(appListExpanded ? View.VISIBLE : View.GONE);
-            ((Button)view).setText(appListExpanded ? "收起" : "管理应用");
-            if (appListExpanded && appList.getChildCount() == 0) showApps();
+        toggleAppsButton = compactButton("管理应用", view -> {
+            if (appListExpanded) collapseAppList();
+            else expandAppList();
         });
-        appsHeader.addView(toggleApps);
+        appsHeader.addView(toggleAppsButton);
         notificationCard.addView(appsHeader);
+        Button recommendedApps = outlineButton("一键选择已安装的微信 / 飞书 / 短信等常用应用",
+                view -> confirmRecommendedApps());
+        LinearLayout.LayoutParams recommendedParams = matchWrap();
+        recommendedParams.topMargin = dp(8);
+        notificationCard.addView(recommendedApps, recommendedParams);
         appList = vertical();
         appList.setVisibility(View.GONE);
         notificationCard.addView(appList);
@@ -278,7 +325,11 @@ public class MainActivity extends Activity {
         if (interactive) BridgeService.setAutoConnectEnabled(this, true);
         else if (!BridgeService.isAutoConnectEnabled(this)) return;
         if (!hasBluetoothPermissions()) {
-            if (interactive) requestBluetoothPermissions();
+            if (interactive) requestRequiredPermissions();
+            return;
+        }
+        if (!isLegacyLocationReady()) {
+            if (interactive) startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS));
             return;
         }
         BluetoothManager manager = getSystemService(BluetoothManager.class);
@@ -289,16 +340,60 @@ public class MainActivity extends Activity {
                 return;
             }
         } catch (SecurityException ignored) {
-            if (interactive) requestBluetoothPermissions();
+            if (interactive) requestRequiredPermissions();
             return;
         }
         BridgeService.requestAutomaticStart(this);
     }
 
+    private void advanceSetup() {
+        if (!hasBluetoothPermissions() || !hasPostNotificationPermission()) {
+            requestRequiredPermissions();
+            return;
+        }
+        if (!isBluetoothEnabled()) {
+            try {
+                startActivity(new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE));
+            } catch (SecurityException error) {
+                requestRequiredPermissions();
+            }
+            return;
+        }
+        if (!isLegacyLocationReady()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("需要打开定位开关")
+                    .setMessage("Android 8–11 将低功耗蓝牙扫描与定位开关绑定。应用不会读取或上传你的位置。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("去打开", (dialog, which) ->
+                            startActivity(new Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS)))
+                    .show();
+            return;
+        }
+        if (!hasNotificationAccess()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("开启通知使用权")
+                    .setMessage("请在下一页打开“AI Passport 门户”。系统要求由用户本人确认，应用无法静默授权。")
+                    .setNegativeButton("取消", null)
+                    .setPositiveButton("继续", (dialog, which) -> openNotificationAccess())
+                    .show();
+            return;
+        }
+        if (selectedAppCount() == 0) {
+            confirmRecommendedApps();
+            return;
+        }
+        startBridge(true);
+        refreshSetupState();
+        if (!BridgeService.isConnected()) toast("设置完成，正在自动搜索 AI Passport");
+    }
+
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                                      int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 1 && hasBluetoothPermissions()) startBridge(false);
+        if (requestCode == 1) {
+            refreshSetupState();
+            if (hasBluetoothPermissions()) startBridge(false);
+        }
     }
 
     private boolean hasBluetoothPermissions() {
@@ -309,7 +404,12 @@ public class MainActivity extends Activity {
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
-    private void requestBluetoothPermissions() {
+    private boolean hasPostNotificationPermission() {
+        return Build.VERSION.SDK_INT < 33 ||
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void requestRequiredPermissions() {
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN,
                     Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS}, 1);
@@ -319,6 +419,152 @@ public class MainActivity extends Activity {
         } else {
             requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
         }
+    }
+
+    private boolean isBluetoothEnabled() {
+        BluetoothManager manager = getSystemService(BluetoothManager.class);
+        BluetoothAdapter adapter = manager == null ? null : manager.getAdapter();
+        try {
+            return adapter != null && adapter.isEnabled();
+        } catch (SecurityException ignored) {
+            return false;
+        }
+    }
+
+    private boolean isLegacyLocationReady() {
+        if (Build.VERSION.SDK_INT >= 31) return true;
+        LocationManager manager = getSystemService(LocationManager.class);
+        if (manager == null) return false;
+        if (Build.VERSION.SDK_INT >= 28) return manager.isLocationEnabled();
+        try {
+            return Settings.Secure.getInt(getContentResolver(), Settings.Secure.LOCATION_MODE) !=
+                    Settings.Secure.LOCATION_MODE_OFF;
+        } catch (Settings.SettingNotFoundException ignored) {
+            return false;
+        }
+    }
+
+    private boolean hasNotificationAccess() {
+        String enabled = Settings.Secure.getString(getContentResolver(),
+                "enabled_notification_listeners");
+        if (enabled == null || enabled.trim().isEmpty()) return false;
+        ComponentName target = new ComponentName(this, PhoneNotificationListener.class);
+        for (String value : enabled.split(":")) {
+            ComponentName item = ComponentName.unflattenFromString(value);
+            if (target.equals(item)) return true;
+        }
+        return false;
+    }
+
+    private void openNotificationAccess() {
+        try {
+            startActivity(new Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS));
+        } catch (RuntimeException error) {
+            openApplicationSettings();
+        }
+    }
+
+    private void openApplicationSettings() {
+        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                Uri.parse("package:" + getPackageName()));
+        startActivity(intent);
+    }
+
+    private int selectedAppCount() {
+        return getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getStringSet(PACKAGES, Collections.emptySet()).size();
+    }
+
+    private void refreshSetupState() {
+        if (setupStatus == null || setupButton == null) return;
+        boolean permissions = hasBluetoothPermissions() && hasPostNotificationPermission();
+        boolean bluetooth = isBluetoothEnabled();
+        boolean location = isLegacyLocationReady();
+        boolean listener = hasNotificationAccess();
+        boolean apps = selectedAppCount() > 0;
+        boolean connected = BridgeService.isConnected();
+        StringBuilder value = new StringBuilder();
+        appendSetupLine(value, permissions, Build.VERSION.SDK_INT >= 31 ?
+                "附近设备与应用通知权限" : "定位与应用通知权限");
+        appendSetupLine(value, bluetooth && location, Build.VERSION.SDK_INT >= 31 ?
+                "蓝牙已打开" : "蓝牙和定位开关已打开");
+        appendSetupLine(value, listener, "通知使用权");
+        appendSetupLine(value, apps, apps ? "已选择 " + selectedAppCount() + " 个通知应用" :
+                "选择要转发的通知应用");
+        appendSetupLine(value, connected, connected ? "AI Passport 已连接" : "等待连接 AI Passport");
+        setupStatus.setText(value.toString());
+
+        boolean ready = permissions && bluetooth && location && listener && apps;
+        boolean complete = connected && ready;
+        setupButton.setText(complete ? "设置完成 · 设备已连接" :
+                ready ? "连接 AI Passport" : "继续完成设置");
+        setupButton.setEnabled(!complete);
+        setupButton.setAlpha(complete ? 0.6f : 1f);
+    }
+
+    private static void appendSetupLine(StringBuilder value, boolean complete, String label) {
+        if (value.length() > 0) value.append('\n');
+        value.append(complete ? "✓  " : "○  ").append(label);
+    }
+
+    private void expandAppList() {
+        appListExpanded = true;
+        appList.setVisibility(View.VISIBLE);
+        if (toggleAppsButton != null) toggleAppsButton.setText("收起");
+        if (appList.getChildCount() == 0) showApps();
+    }
+
+    private void collapseAppList() {
+        appListExpanded = false;
+        appList.setVisibility(View.GONE);
+        if (toggleAppsButton != null) toggleAppsButton.setText("管理应用");
+    }
+
+    private void confirmRecommendedApps() {
+        Set<String> recommended = installedRecommendedPackages();
+        if (recommended.isEmpty()) {
+            expandAppList();
+            toast("未识别到常用应用，请手动勾选");
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("选择常用通知应用")
+                .setMessage("将勾选本机已安装的微信、飞书/Lark、默认短信、QQ、钉钉、WhatsApp 或 Telegram。你可以随时修改。")
+                .setNegativeButton("手动选择", (dialog, which) -> expandAppList())
+                .setPositiveButton("一键勾选", (dialog, which) -> {
+                    Set<String> selected = new HashSet<>(getSharedPreferences(PREFS, MODE_PRIVATE)
+                            .getStringSet(PACKAGES, Collections.emptySet()));
+                    selected.addAll(recommended);
+                    getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+                            .putStringSet(PACKAGES, selected).apply();
+                    refreshSelectedApps();
+                    showApps();
+                    startBridge(false);
+                    toast("已选择 " + recommended.size() + " 个常用应用");
+                })
+                .show();
+    }
+
+    private Set<String> installedRecommendedPackages() {
+        Set<String> installed = new HashSet<>();
+        Intent launcher = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER);
+        for (ResolveInfo info : getPackageManager().queryIntentActivities(launcher, 0)) {
+            installed.add(info.activityInfo.packageName);
+        }
+        String sms = Telephony.Sms.getDefaultSmsPackage(this);
+        if (sms != null && !sms.trim().isEmpty()) installed.add(sms);
+        String[] candidates = {
+                "com.tencent.mm", "com.ss.android.lark", "com.larksuite.suite",
+                "com.google.android.apps.messaging", "com.samsung.android.messaging",
+                "com.android.mms", "com.tencent.mobileqq", "com.alibaba.android.rimet",
+                "com.whatsapp", "org.telegram.messenger"
+        };
+        Set<String> result = new LinkedHashSet<>();
+        for (String candidate : candidates) {
+            if (installed.contains(candidate)) result.add(candidate);
+        }
+        if (sms != null && installed.contains(sms)) result.add(sms);
+        return result;
     }
 
     private void chooseFirmware() {
@@ -423,6 +669,7 @@ public class MainActivity extends Activity {
                 BridgeService.isSlotPresent() && !active);
         clearSlotButton.setAlpha(clearSlotButton.isEnabled() ? 1f : 0.45f);
         refreshFirmwareButtons();
+        refreshSetupState();
     }
 
     private void refreshFirmwareList() {
@@ -449,7 +696,7 @@ public class MainActivity extends Activity {
         row.setLayoutParams(rowParams);
 
         row.addView(text(image.displayName(), 16, COLOR_TEXT, true));
-        String details = (image.version == null || image.version.isBlank() ? "版本未知" :
+        String details = (image.version == null || image.version.trim().isEmpty() ? "版本未知" :
                 "版本 " + image.version) + "  ·  " + formatSize(image.size);
         TextView meta = text(details, 13, COLOR_MUTED, false);
         meta.setPadding(0, dp(3), 0, 0);
@@ -550,6 +797,7 @@ public class MainActivity extends Activity {
         int count = getSharedPreferences(PREFS, MODE_PRIVATE)
                 .getStringSet(PACKAGES, Collections.emptySet()).size();
         selectedAppsText.setText(getString(R.string.selected_app_count, count));
+        refreshSetupState();
     }
 
     private LinearLayout card() {

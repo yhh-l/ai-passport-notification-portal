@@ -1,0 +1,5 @@
+# Copy this file to release-signing.properties. Never commit the real file or keystore.
+storeFile=../.local-release/ai-passport-portal-release.jks
+storePassword=replace-with-a-long-random-password
+keyAlias=passport-release
+keyPassword=replace-with-the-key-password

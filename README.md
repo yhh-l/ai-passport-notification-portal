@@ -70,7 +70,7 @@ The Android app uses standard Android APIs. Samsung phones, including the S25 Ul
 - ESP-IDF 5.5.x; this project was built with ESP-IDF 5.5.3
 - Android Studio/SDK with compile SDK 36
 - JDK 17
-- Android 9 (API 28) or newer with BLE
+- Android 8.0 (API 26) or newer with BLE
 
 ### Build the resident portal
 
@@ -82,28 +82,33 @@ idf.py -B build-slot-portal build
 
 Do **not** convert the partitioned output into a gap-padded image and flash it from `0x0`. That can overwrite NVS, BLE keys, `cardid` and the user slot. Use the offset-aware command and backup guidance in [APP_README.en.md](APP_README.en.md).
 
-### Build the Android app
+### Install or build the Android app
+
+Download the signed universal APK from [GitHub Releases](https://github.com/yhh-l/ai-passport-notification-portal/releases/latest). It contains no ABI-specific native libraries, so the same file is used on ARM and x86 Android devices.
+
+To build and verify a signed release locally, configure the private signing file described in [android-app/RELEASING.md](android-app/RELEASING.md), then run:
 
 ```sh
 cd android-app
 JAVA_HOME=/path/to/jdk17 \
 ANDROID_HOME=/path/to/android-sdk \
-./gradlew clean assembleDebug lintDebug
+./tools/package_release.sh
 ```
 
-Debug APK output:
+Release APK output:
 
 ```text
-android-app/app/build/outputs/apk/debug/app-debug.apk
+android-app/dist/AI-Passport-Portal-Android-1.4.0.apk
 ```
 
 ### First connection
 
-1. Install the APK and allow **Nearby devices** and app notifications.
-2. Open Android's **Notification access** settings and enable **AI Passport Portal**.
-3. Turn on the AI Passport and complete the first secure Bluetooth pairing.
-4. In **Manage apps**, select the apps whose notifications may be forwarded.
-5. Use **Send test message** before relying on real notifications.
+1. Install and open the APK, then tap **Quick setup**.
+2. Follow the guided checks for Nearby devices, Bluetooth, Notification access and notification-app selection. Completed steps are skipped automatically.
+3. Turn on the AI Passport and approve the first secure Bluetooth pairing requested by Android.
+4. Use **Send test message** before relying on real notifications.
+
+Android requires the user to approve runtime permissions, Notification access and the first Bluetooth pairing. No APK can silently bypass these system security confirmations.
 
 After the first secure pairing, the app normally reconnects by itself. Android's **Force stop** disables background receivers until the app is opened again, so it should not be used as an auto-connect test.
 
@@ -142,7 +147,7 @@ APP_README*.md               Detailed build, flash, recovery and validation note
 As of **October 9, 2026**:
 
 - The resident portal `1.2.1-portal` builds successfully with ESP-IDF 5.5.3.
-- Android app `1.3.1` (`versionCode 5`) builds and passes `lintDebug`.
+- Android app `1.4.0` (`versionCode 6`) builds as a signed universal APK for API 26–36 and passes `lintDebug` / `lintRelease` with 0 errors.
 - Automatic encrypted reconnect after toggling phone Bluetooth was observed on a Samsung S25 Ultra.
 - Notification navigation, display sleep/wake, app filtering, per-app clearing and user-firmware transfer were exercised on the physical device; the user reported the tested flow working normally.
 - Host tests for the message store and UI calculations pass.
@@ -166,11 +171,12 @@ source ~/esp/esp-idf-v5.5.3/export.sh
 idf.py -B build-slot-portal build
 ```
 
-Android check:
+Android checks:
 
 ```sh
 cd android-app
 ./gradlew assembleDebug lintDebug
+./tools/package_release.sh
 ```
 
 ## License and attribution

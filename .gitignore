@@ -13,3 +13,8 @@ android-app/local.properties
 .local-backups/
 
 build-*/
+
+# Android release signing secrets and generated distribution files.
+.local-release/
+android-app/release-signing.properties
+android-app/dist/
