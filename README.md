@@ -1,218 +1,178 @@
-> This branch boots the Android notification companion. See [APP_README.md](APP_README.md) for build, installation and privacy notes. The reference information below describes the upstream BSP demos.
+# AI Passport Notification Portal
 
-# FoloToy AI Passport
+**English** | [简体中文](README.zh_CN.md) · [Detailed setup](APP_README.en.md) · [中文部署说明](APP_README.md)
 
-English | [简体中文](README.zh_CN.md)
+An ESP32-C3 firmware and Android companion app that turn the FoloToy AI Passport into a private notification display and a small firmware portal.
 
-FoloToy AI Passport is open wearable AI hardware designed for AI agents. This repository is the development baseline for the device. It goes beyond showing “what the board can run” by keeping the **hardware facts, stable interfaces, resource boundaries, reference implementations, and validation methods** that an agent needs to build applications in one place.
+Selected Android notifications—such as WeChat, Feishu/Lark and SMS—are forwarded over an authenticated, encrypted BLE connection. The device keeps recent messages for manual browsing, wakes its screen when a new message arrives, reconnects automatically after the initial pairing, and can install one compatible user application without replacing the resident portal.
 
-The repository is organized around the following principles:
+> This is a community derivative built on the [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport) BSP. It is not an official FoloToy release.
 
-- `main` is the smallest complete runnable baseline and an executable description of the current hardware capabilities.
-- `components/bsp` isolates board-level details and exposes stable APIs to applications.
-- `demo/*` branches show different paths from a product requirement to a working implementation.
-- `AGENTS.md` defines how an agent should work in the repository, while `docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md` contains the complete hardware context and troubleshooting knowledge.
-- Build results and physical-device results are reported separately. A successful build must never be presented as successful hardware validation.
+## Highlights
 
-The intended workflow is simple: give an agent this repository and an application requirement. The agent identifies the available capabilities and constraints, selects relevant examples, implements and builds the application, and returns an acceptance checklist that can be executed on the physical device.
+- **Android notification bridge**: forwards only the apps selected by the user.
+- **No cloud relay**: notification text and firmware data travel directly between the phone and the AI Passport over BLE.
+- **Persistent browsing session**: up to 32 recent notifications are retained in device RAM across all apps; messages do not disappear on a timer.
+- **Source filters**: cycle between all messages and individual apps, then clear only the current app when needed.
+- **Automatic reconnect**: the foreground service retries after app launch, phone boot, APK update and Bluetooth being turned back on.
+- **Screen power management**: new notifications wake the display; 60 seconds of inactivity turns off the LCD/backlight while BLE stays active.
+- **Firmware library**: the Android app can import multiple compatible ESP32-C3 application images and install one image into the device's 4 MiB user slot.
+- **Resident factory portal**: the notification portal lives in the factory partition and is not overwritten by normal user-slot installation.
 
-## Entry point for AI agents
+## Controls
 
-Before starting development, establish context in this order:
+### Notification view
 
-1. Read `AGENTS.md`, this README, and [`docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md`](docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md).
-2. Run `git status --short --branch` and preserve all existing user changes.
-3. Read the affected `components/bsp/include/*.h` headers and their implementations. Do not infer board behavior from common chip or development-board configurations.
-4. Use `git branch -r --list 'origin/demo/*'` to find examples close to the requirement. Reuse only the relevant design patterns; do not merge an entire demo branch by default.
-5. Break the requirement into inputs, outputs, state, concurrent tasks, persistence, memory budget, and failure degradation before deciding whether to change `main` or extend `components/bsp`.
-6. Complete the minimum build check and all applicable logic tests. Keep explicit on-device acceptance items for every conclusion that depends on the display, buttons, audio, battery, or timing.
+| Input | Action |
+|---|---|
+| Up | Previous message in the active source filter |
+| Down | Next message in the active source filter |
+| OK | Cycle through all messages and per-app filters; never deletes a message |
+| Hold Up for 3 seconds | Ask to clear messages for the active app; press OK to confirm |
+| Hold Down for 3 seconds | Toggle notification sound mute |
+| Hold OK for 3 seconds | Run the device self-test |
+| Double-press Down | Turn off the screen immediately |
+| Double-press OK | Open or close the firmware portal |
 
-### Source-of-truth priority
+### Firmware portal
 
-When information conflicts, use this priority order:
+| Input | Action |
+|---|---|
+| Up / Down | Select the resident notification portal or the installed user app |
+| OK | Return to notifications |
+| Hold OK for 3 seconds | Start the selected user app |
 
-```text
-Schematic / PCB / board revision / physical measurement
-    > components/bsp/include/bsp_pins.h
-    > BSP public headers and implementations
-    > docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md
-    > README and example applications
-```
+A sleeping screen consumes the first button action only to wake. A new notification wakes it automatically.
 
-The repository does not currently include schematic or PCB source files. When the board revision, wiring, polarity, register behavior, or unused GPIOs are unknown, an agent must report the unknown and request evidence instead of filling the gap with parameters from another ESP32-C3 board.
-
-## Hardware capability contract
-
-The table below describes the application capabilities implemented by the current `main` branch. It is not a list of everything that might be possible according to the chip datasheet.
-
-| Capability | Confirmed implementation | Application interface | Boundaries that must be respected |
-| --- | --- | --- | --- |
-| Display | ST7789P3, 240 × 320 portrait RGB565, SPI2 at 40 MHz; LEDC backlight | `bsp_display_*`, `bsp_lvgl_*` | The ESP32-C3 has no PSRAM; the current design uses a small single DMA buffer; no LCD MISO, touch, or known TE interface |
-| Input | `UP`, `DOWN`, and `OK` share an ADC resistor ladder on GPIO0 | `bsp_button_init()`, `bsp_button_read_mv()` | Callbacks run in the button component task and must not block; do not create a second ADC1 unit |
-| Audio | ES8311 with full-duplex PCM over I2S0, supporting playback and microphone capture | `bsp_audio_*` | PCM reads and writes block and belong in a worker task; format changes must retain the BSP close/open sequence |
-| Battery | CW2017 state-of-charge and voltage readings | `bsp_battery_*` | This capability is optional at runtime; accuracy depends on the cell and battery profile and is not equivalent to a calibrated result |
-| Wi-Fi | On-demand 2.4 GHz STA scan demo | `main/demo_wifi.c` | Scans only; it does not connect, store credentials, or validate antenna/RF performance |
-| Bluetooth LE | On-demand non-connectable NimBLE advertising as `FoloPassport` | `main/demo_ble.c` | ESP32-C3 does not support Bluetooth Classic; radio range, coexistence, and power draw require device measurements |
-| BLUFI provisioning | Secure BLUFI transfer of Wi-Fi STA credentials and connection status | `main/demo_blufi.c` | Credentials persist in Wi-Fi NVS; BLUFI is maintained for compatibility and is not a complete production onboarding design |
-| Low power | Two-second light sleep and five-second deep sleep, both with RTC timer wakeup | `main/demo_low_power.c` | Deep sleep restarts the application; external/button wakeup and board-level power consumption remain unverified |
-| Shared bus | ES8311 and CW2017 share I2C0 | `bsp_i2c_*` | Every device must reuse the bus owned by the BSP; do not create another bus on the same port for scanning or a new device |
-| Logging and flashing | Native ESP32-C3 USB Serial/JTAG | ESP-IDF console | GPIO18/19 are reserved for USB; the default UART0 TX on GPIO21 conflicts with the backlight |
-
-All pins, addresses, panel parameters, and button voltage windows are defined only in [`components/bsp/include/bsp_pins.h`](components/bsp/include/bsp_pins.h). Application code must not duplicate these constants. See the [AI Hardware Development Guide](docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md) for the complete pin map, panel initialization, ADC thresholds, I2C addressing rules, audio clocks, and memory details.
-
-Applications may also use ESP-IDF timers, FreeRTOS tasks, and internal Flash/NVS; the Pomodoro branch contains an NVS example. Wi-Fi and Bluetooth LE remain ESP-IDF application services rather than BSP APIs: their menu pages initialize each stack only while open and release it on exit. `demo/claude-buddy-port` remains a fuller BLE application architecture reference, not a substitute for measuring the current board's antenna, RF performance, power consumption, and coexistence behavior. Every FoloToy AI Passport has 8 MB of Flash, and the default firmware configuration targets 8 MB with a 3 MB factory-app partition.
-
-### BLUFI Wi-Fi setup demo
-
-Open **BLUFI Setup** and connect to `BLUFI_FoloPassport` with Espressif's [Android EspBlufi](https://github.com/EspressifApp/EspBlufi), [iOS EspBlufi](https://github.com/EspressifApp/EspBlufiForiOS), or ESP Config WeChat mini program. The `BLUFI` prefix is required by the mini program's default device filter. Scan for an AP, send its SSID/password, and request connection. The page displays BLE, Wi-Fi, and IP status. `OK` retries the saved STA configuration; `DOWN` clears only the saved Wi-Fi STA credentials. Long `OK` returns to the main menu.
-
-The demo follows ESP-IDF's BLUFI DH/AES/CRC negotiation and never logs the received password. BLUFI itself is in maintenance mode upstream, so a production product still needs an explicit provisioning lifecycle, device identity, authorization policy, timeout, retry limits, and physical reset/recovery design.
-
-### Capabilities outside the current contract
-
-The repository does not currently provide enough evidence to guarantee touch input, display readback, an IMU, external storage, charging control, USB insertion detection, controllable power-amplifier enable, external/button deep-sleep wakeup, arbitrary “free GPIOs,” exact battery capacity, or production-grade power specifications. A capability being present in the ESP32-C3 silicon does not mean that it is connected, powered correctly, or validated on this board.
-
-Requirements involving these capabilities must begin with a schematic, board revision, component documentation, or physical measurements. Only then should the BSP and its acceptance criteria be extended.
-
-## Start development with one requirement
-
-A simple request can be given directly to an agent:
+## System architecture
 
 ```text
-On the main branch, build an offline habit-tracking application for FoloToy AI Passport.
-Use the three physical buttons and the 240×320 display, and preserve records across power loss.
-Follow AGENTS.md and AI_HARDWARE_DEVELOPMENT_GUIDE.md. Inspect relevant demo branches first,
-keep hardware logic in components/bsp and application logic in main, deliver a runnable
-implementation with tests, and report the build result, unexecuted device checks, and exact
-on-device acceptance steps separately.
+Android notification listener
+        │
+        │ selected notifications / firmware chunks
+        ▼
+Android foreground BLE service
+        │  authenticated + encrypted GATT
+        ▼
+AI Passport factory portal
+        ├── notification list and UI
+        ├── sound, buttons and screen sleep
+        └── 4 MiB user application slot
 ```
 
-The more specific the requirement, the more likely the agent is to implement it correctly in one pass. Useful details include:
+The Android app uses standard Android APIs. Samsung phones, including the S25 Ultra used during development, are treated as ordinary Android devices; no Samsung-specific SDK is required.
 
-- User flow: what each page displays and what short press, double press, and long press do for each button.
-- State and data: whether the application needs timing, persistence across power loss, networking, recording, or communication with a computer.
-- Experience goals: fonts, colors, animation, sound, response time, and error states.
-- Constraints: whether the main menu may be replaced, dependencies added, Flash used, or default interactions changed.
-- Acceptance criteria: which behaviors require automated tests and which must be observed on real hardware.
+## Quick start
 
-When details are omitted, an agent may choose conservative defaults that do not change the product direction, but it must list those assumptions in the delivery. Decisions involving new wiring, electrical safety, board revisions, or irreversible data formats require confirmation first.
+### Requirements
 
-## Demo branches are design cases, not a feature pile
+- FoloToy AI Passport with ESP32-C3, 8 MiB flash and no PSRAM
+- ESP-IDF 5.5.x; this project was built with ESP-IDF 5.5.3
+- Android Studio/SDK with compile SDK 36
+- JDK 17
+- Android 9 (API 28) or newer with BLE
 
-Each `demo/*` branch evolves the baseline into an independent application. The branches demonstrate how specific problems were solved. New applications should normally branch from `main` and consult relevant examples instead of merging multiple demos wholesale.
+### Build the resident portal
 
-| Branch | Application | Patterns worth reusing |
-| --- | --- | --- |
-| `demo/stopwatch` | Stopwatch | Minimal timer application, separation of pure logic from LVGL, host-side logic tests |
-| `demo/cat-themed-pomodoro-timer` | Cat-themed Pomodoro timer | Monotonic time, pause/resume, NVS persistence, a detailed PRD, and a state model |
-| `demo/rock-paper-scissors` | Rock paper scissors | RGB565 image assets, asset-generation scripts, and Flash resource tradeoffs |
-| `demo/tetris-game` | Three-button Tetris | Real-time game loop, low-latency `PRESS` input, partial refresh, a pure game model, audio, and microphone interaction |
-| `demo/claude-buddy-port` | Desktop AI hardware companion | Replacing the demo menu with a complete application, encrypted BLE, protocol parsing, state reduction, task communication, and extensive host tests |
-
-Inspect an example without switching the current working tree:
-
-```bash
-git branch -r --list 'origin/demo/*'
-git diff main...origin/demo/tetris-game -- main components tests
-git show origin/demo/tetris-game:main/demo_tetris.c
+```sh
+source ~/esp/esp-idf-v5.5.3/export.sh
+idf.py set-target esp32c3
+idf.py -B build-slot-portal build
 ```
 
-Start a new application:
+Do **not** convert the partitioned output into a gap-padded image and flash it from `0x0`. That can overwrite NVS, BLE keys, `cardid` and the user slot. Use the offset-aware command and backup guidance in [APP_README.en.md](APP_README.en.md).
 
-```bash
-git switch main
-git switch -c feature/my-passport-app
+### Build the Android app
+
+```sh
+cd android-app
+JAVA_HOME=/path/to/jdk17 \
+ANDROID_HOME=/path/to/android-sdk \
+./gradlew clean assembleDebug lintDebug
 ```
 
-Example branches may change the same menu, configuration, or driver in incompatible ways. An agent must understand the differences before extracting a state model, asset pipeline, or concurrency pattern. Code appearing in an example branch is not automatically part of the current `main` BSP contract.
-
-## Application and BSP boundary
+Debug APK output:
 
 ```text
-Natural-language requirement
-  └─ main/                         Pages, state machines, animation, app tasks, assets
-      └─ components/bsp/include/  Stable board-level APIs
-          └─ components/bsp/src/  GPIO, buses, devices, and driver details
-              └─ bsp_pins.h       Single source of truth for pins and hardware parameters
+android-app/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-To add a regular page, create `main/demo_<feature>.c` and implement the `enter`, `exit`, and `key` interface, then update:
+### First connection
 
-- Declarations in `main/demo.h`.
-- The source list in `main/CMakeLists.txt`.
-- The `DEMOS[]` registration in `main/main.c`.
-- Menu initialization status and failure degradation if a new optional peripheral is involved.
+1. Install the APK and allow **Nearby devices** and app notifications.
+2. Open Android's **Notification access** settings and enable **AI Passport Portal**.
+3. Turn on the AI Passport and complete the first secure Bluetooth pairing.
+4. In **Manage apps**, select the apps whose notifications may be forwarded.
+5. Use **Send test message** before relying on real notifications.
 
-Only hardware capabilities shared by multiple applications belong in `components/bsp`. A BSP API must document blocking behavior, thread context, memory ownership, failure values, and initialization order. Pins and I2C addresses belong only in `bsp_pins.h`.
+After the first secure pairing, the app normally reconnects by itself. Android's **Force stop** disables background receivers until the app is opened again, so it should not be used as an auto-connect test.
 
-### Runtime invariants
+## Notification and privacy behavior
 
-- LVGL is not thread-safe. Code outside the LVGL context must hold `bsp_lvgl_lock()` while accessing `lv_*` objects.
-- Button callbacks only dispatch lightweight events. Recording, playback, storage, and other slow operations belong in worker tasks.
-- When leaving a page, stop every task or timer that may access its UI before deleting the screen and clearing object pointers.
-- The default global interaction is `UP`/`DOWN` navigation in the menu, short `OK` to enter, and long `OK` to return from a page. Any change must be explicit.
-- New images, fonts, network stacks, audio buffers, LVGL buffers, and task stacks must be evaluated against internal RAM. Sufficient total free heap does not guarantee a sufficiently large contiguous block.
-- Testable state machines, protocols, timing, and layout calculations should be separated from ESP-IDF/LVGL and covered by host-side logic tests.
+- The 32-message limit is **shared by all selected apps**, not 32 per app.
+- Messages live only in AI Passport RAM and are cleared by reboot or explicit per-app deletion.
+- SMS body and one-time-code display is disabled by default. When disabled, SMS content is hidden and standalone 4–8 digit numbers in ordinary notifications are masked.
+- BLE notification payloads are limited to 160 UTF-8 bytes. Images, avatars and attachments are not transferred.
+- Notifications missed while the phone and device are disconnected are not guaranteed to be replayed.
+- Full-flash backups may contain Wi-Fi credentials, BLE bonding keys and device identifiers. `.local-backups/` is intentionally excluded from Git.
 
-## Build and run baseline
+## User firmware slot
 
-The project uses ESP-IDF 5.5.x; the known development environment is 5.5.3:
+The phone may store several `.bin` files, but the current partition map exposes **one 4 MiB user application slot** on the device. Installing another app replaces only that slot, not the resident notification portal.
 
-```bash
-get_idf553                    # Maintainer-local helper
-# Or source "$HOME/esp/esp-idf-v5.5.3/export.sh" (example installation path)
-idf.py set-target esp32c3     # Run for a fresh checkout or after using another target
-idf.py build
-idf.py flash monitor
-```
+The importer checks the ESP application header, ESP32-C3 chip identifier, image size and SHA-256. This does not prove board-level compatibility: install only application images built for the AI Passport BSP. Never select a `full.bin`, bootloader or partition-table image.
 
-The first build uses ESP-IDF Component Manager to fetch LVGL, `esp_lvgl_port`, `button`, `esp_codec_dev`, and other dependencies. Do not edit the generated `managed_components/` directory. If configuration state is stale, use `idf.py fullclean` and configure again, but never use it to clean user source changes.
+The project was tested with a user-slot build derived from [weibaohui/aipassport-radio](https://github.com/weibaohui/aipassport-radio). Third-party source code and binaries remain subject to their respective upstream licenses and compatibility constraints.
 
-The current baseline includes a pure-logic test that can run independently:
-
-```bash
-cc -std=c11 -Wall -Wextra -Werror -Imain \
-  tests/test_ui_pixel_math.c main/ui_pixel_math.c \
-  -o /tmp/test_ui_pixel_math
-/tmp/test_ui_pixel_math
-```
-
-Different example branches may provide their own host-test commands; follow the README on that branch.
-
-## Acceptance and delivery format
-
-`idf.py build` is the minimum automated check, not hardware validation. For changes involving physical peripherals, record at least the following on a FoloToy AI Passport:
-
-- USB Serial/JTAG produces stable startup logs with no reboot loop, assertion, or watchdog reset.
-- Display orientation, colors, edges, refresh behavior, and backlight are correct.
-- `UP`, `DOWN`, and `OK` produce the intended events, and long `OK` returns correctly.
-- Audio sample rate, playback, non-zero recording, and page exit behavior are correct.
-- Battery readings are plausible, and the application degrades safely when the CW2017 is absent.
-- Wi-Fi rescans complete, BLE advertising is visible to a phone scanner, and both pages can be entered and exited repeatedly.
-- BLUFI returns an AP list, accepts credentials without logging the password, reports success/failure, persists a successful STA configuration, and clears it with `DOWN`.
-- The Low Power page uses `UP`/`DOWN` to select light or deep sleep and `OK` to run it. Light sleep wakes by timer after approximately two seconds and restores the display backlight; deep sleep restarts after approximately five seconds and reports a retained wake count.
-- Repeated page transitions and concurrent operations do not continuously leak tasks, objects, or heap.
-
-An agent's final delivery must distinguish these outcomes:
+## Repository layout
 
 ```text
-Build: PASS / FAIL / NOT RUN
-Host tests: PASS / FAIL / NOT RUN
-Device tests: PASS / FAIL / NOT RUN
-Unverified: items that still require a board, instrument, or user confirmation
+android-app/                 Android notification bridge and firmware manager
+components/bsp/              Reusable display, button, audio, battery and I²C BSP
+main/                        Resident portal, BLE protocol, message store and UI
+tests/                       Lightweight host-side message/UI tests
+tools/macos_ble_test.swift   Desktop BLE test sender
+docs/                        Hardware reference and troubleshooting notes
+partitions.csv               Factory portal plus 4 MiB user-slot layout
+APP_README*.md               Detailed build, flash, recovery and validation notes
 ```
 
-See the [AI Hardware Development Guide](docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md) for the acceptance matrix by change type—including pins, LCD, ADC, codec, I2C, and DMA—and the troubleshooting reference.
+## Validation snapshot
 
-## Project structure
+As of **October 9, 2026**:
 
-```text
-components/bsp/include/  Public BSP APIs and bsp_pins.h hardware facts
-components/bsp/src/      Display, button, audio, battery, and shared-I2C implementations
-main/                    Minimal menu, LVGL UI, and independent hardware demo pages
-tests/                   Lightweight logic tests that can run without hardware
-docs/                    Agent hardware development guide and extension documentation
-sdkconfig.defaults       ESP32-C3, USB console, Flash, and LVGL defaults
-partitions.csv           NVS, PHY data, and 3 MB factory application layout
-AGENTS.md                Coding, validation, and contribution rules for agents
+- The resident portal `1.2.1-portal` builds successfully with ESP-IDF 5.5.3.
+- Android app `1.3.1` (`versionCode 5`) builds and passes `lintDebug`.
+- Automatic encrypted reconnect after toggling phone Bluetooth was observed on a Samsung S25 Ultra.
+- Notification navigation, display sleep/wake, app filtering, per-app clearing and user-firmware transfer were exercised on the physical device; the user reported the tested flow working normally.
+- Host tests for the message store and UI calculations pass.
+
+Still treat these as separate checks:
+
+- A phone-side “installation complete” result is not a byte-for-byte flash readback.
+- The final Radio slot readback was interrupted before completion.
+- Automatic rollback from every third-party user app to the factory portal depends on that app's OTA behavior and must be verified on hardware.
+
+See [APP_README.en.md](APP_README.en.md) for exact image sizes, hashes, partition offsets and remaining verification boundaries.
+
+## Development
+
+Read [AGENTS.md](AGENTS.md) and [docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md](docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md) before changing hardware-facing code. Keep reusable hardware logic in `components/bsp`, application/UI behavior in `main`, and report clean-build results separately from physical-device results.
+
+Minimum firmware check:
+
+```sh
+source ~/esp/esp-idf-v5.5.3/export.sh
+idf.py -B build-slot-portal build
 ```
+
+Android check:
+
+```sh
+cd android-app
+./gradlew assembleDebug lintDebug
+```
+
+## License and attribution
+
+The repository is released under the [MIT License](LICENSE). It is derived from the FoloToy AI Passport project and includes Noto Sans SC font data under the license in [main/fonts/OFL-NotoSansSC.txt](main/fonts/OFL-NotoSansSC.txt). Third-party firmware is not part of this repository unless explicitly stated and remains governed by its upstream license.

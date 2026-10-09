@@ -1,5 +1,7 @@
 # AI Passport 门户（Android 通知桥 + 固件玩法库）
 
+**简体中文** | [English](APP_README.en.md)
+
 本项目参照 [FoloToy AI Passport 创建玩法教程](https://ai-passport.folotoy.cn/guides/create-a-play-with-agent/) 的开发、编译和实机验证流程，将“随身消息”做成常驻门户：普通 Android 手机把已选择应用的系统通知通过加密 BLE 发送到 AI Passport；Android APK 还可保存多个兼容玩法固件，并把其中一个安装到设备上的用户玩法槽。项目不读取短信数据库、不接入飞书服务端 API，BLE 广播名为 `PassportNotify`。
 
 ## 本机环境与构建
@@ -111,7 +113,7 @@ Radio 为满足 4 MiB 槽位使用 size optimization、关闭运行日志、关�
 
 固件 BLE 特征与通知位于同一加密服务：控制 `...c010`、数据 `...c011`、状态 `...c012`，均要求 MITM 认证加密。控制命令支持开始、结束、取消和清空用户槽；断线会中止未完成传输。传输期间 Android 前台服务持有临时 WakeLock。
 
-## 已验证与未验证边界（2026-10-08）
+## 已验证与未验证边界（2026-10-09）
 
 已验证：
 
