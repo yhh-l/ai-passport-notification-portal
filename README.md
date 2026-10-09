@@ -98,7 +98,7 @@ ANDROID_HOME=/path/to/android-sdk \
 Release APK output:
 
 ```text
-android-app/dist/AI-Passport-Portal-Android-1.4.0.apk
+android-app/dist/AI-Passport-Portal-Android-1.5.0.apk
 ```
 
 ### First connection
@@ -125,7 +125,9 @@ After the first secure pairing, the app normally reconnects by itself. Android's
 
 The phone may store several `.bin` files, but the current partition map exposes **one 4 MiB user application slot** on the device. Installing another app replaces only that slot, not the resident notification portal.
 
-The importer checks the ESP application header, ESP32-C3 chip identifier, image size and SHA-256. This does not prove board-level compatibility: install only application images built for the AI Passport BSP. Never select a `full.bin`, bootloader or partition-table image.
+APK 1.5.0 no longer asks users to pick an arbitrary local `.bin`. It loads the published FoloToy official catalog over HTTPS, keeps only official `esp-merged-0x0` packages at or below 4 MiB, and verifies the catalog size plus SHA-256 after download. Because the official package is a merged image starting at `0x0`, the app extracts the application at `0x10000`, validates its ESP32-C3 header/descriptor, and saves the normalized `*-user-slot.bin` in `Download/AI-Passport` before offering BLE installation. Packages above 4 MiB or with unsupported metadata are hidden.
+
+These checks still do not prove board-level compatibility. The resident portal remains available for recovery, and each downloaded play should be tested individually on hardware.
 
 The project was tested with a user-slot build derived from [weibaohui/aipassport-radio](https://github.com/weibaohui/aipassport-radio). Third-party source code and binaries remain subject to their respective upstream licenses and compatibility constraints.
 
@@ -147,16 +149,16 @@ APP_README*.md               Detailed build, flash, recovery and validation note
 As of **October 9, 2026**:
 
 - The resident portal `1.2.1-portal` builds successfully with ESP-IDF 5.5.3.
-- Android app `1.4.0` (`versionCode 6`) builds as a signed universal APK for API 26–36 and passes `lintDebug` / `lintRelease` with 0 errors.
+- Android app `1.5.0` (`versionCode 7`) builds as a signed universal APK for API 26–36 and passes `lintDebug` / `lintRelease` with 0 errors; signing and ZIP alignment were also verified.
 - Automatic encrypted reconnect after toggling phone Bluetooth was observed on a Samsung S25 Ultra.
 - Notification navigation, display sleep/wake, app filtering, per-app clearing and user-firmware transfer were exercised on the physical device; the user reported the tested flow working normally.
-- Host tests for the message store and UI calculations pass.
+- Host tests for the message store and UI calculations pass. The official catalog parser selected 12 current published packages at or below 4 MiB and excluded two oversized entries during the October 9 snapshot; all 12 source files matched the official size/SHA-256 and contained an ESP32-C3 application at `0x10000`.
 
 Still treat these as separate checks:
 
 - A phone-side “installation complete” result is not a byte-for-byte flash readback.
 - The final Radio slot readback was interrupted before completion.
-- Automatic rollback from every third-party user app to the factory portal depends on that app's OTA behavior and must be verified on hardware.
+- Automatic rollback from every downloaded user app to the factory portal depends on that app's OTA behavior and must be verified on hardware. The exact APK 1.5.0 download-to-BLE flow has not yet been exercised on a connected Android phone.
 
 See [APP_README.en.md](APP_README.en.md) for exact image sizes, hashes, partition offsets and remaining verification boundaries.
 

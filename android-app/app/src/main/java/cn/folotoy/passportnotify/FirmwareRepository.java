@@ -2,9 +2,6 @@ package cn.folotoy.passportnotify;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.database.Cursor;
-import android.net.Uri;
-import android.provider.OpenableColumns;
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -12,6 +9,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.RandomAccessFile;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -25,6 +23,7 @@ import org.json.JSONObject;
 
 public final class FirmwareRepository {
     public static final long DEVICE_SLOT_SIZE = 0x400000L;
+    private static final long MERGED_APP_OFFSET = 0x10000L;
     private static final String PREFS = "firmware_library";
     private static final String KEY_ITEMS = "items";
     private static final int APP_DESCRIPTOR_OFFSET = 32;
@@ -54,7 +53,8 @@ public final class FirmwareRepository {
                 items.add(new FirmwareImage(
                         json.getString("id"), name, original, project,
                         json.optString("version"), json.optLong("size"),
-                        json.optString("sha256"), json.optLong("importedAt"), file));
+                        json.optString("sha256"), json.optLong("importedAt"), file,
+                        json.optString("officialSlug"), json.optString("sourceSha256")));
             }
         } catch (JSONException ignored) {
             items.clear();
@@ -63,88 +63,112 @@ public final class FirmwareRepository {
         return items;
     }
 
-    public synchronized FirmwareImage importFrom(Uri uri) throws IOException {
-        String originalName = queryName(uri);
-        if (!originalName.toLowerCase(Locale.ROOT).endsWith(".bin")) {
-            throw new IOException("请选择 ESP32-C3 应用固件 .bin 文件");
+    public synchronized FirmwareImage findOfficial(OfficialFirmware official) {
+        for (FirmwareImage image : list()) {
+            if (official.slug.equals(image.officialSlug) &&
+                    official.sourceSha256.equalsIgnoreCase(image.sourceSha256)) return image;
         }
+        return null;
+    }
 
-        File temporary = File.createTempFile("import-", ".bin", directory);
-        MessageDigest digest;
-        try {
-            digest = MessageDigest.getInstance("SHA-256");
-        } catch (NoSuchAlgorithmException error) {
-            throw new IOException("系统不支持 SHA-256", error);
+    public synchronized FirmwareImage importOfficial(InputStream input,
+                                                     OfficialFirmware official,
+                                                     ProgressListener listener)
+            throws IOException {
+        if (official.sourceSize <= 0 || official.sourceSize > DEVICE_SLOT_SIZE) {
+            throw new IOException("官网固件超过设备玩法槽上限 4.00 MiB");
         }
-
-        long size = 0;
-        try (InputStream source = new BufferedInputStream(
-                     context.getContentResolver().openInputStream(uri));
-             BufferedOutputStream target = new BufferedOutputStream(new FileOutputStream(temporary))) {
-            if (source == null) throw new IOException("无法读取所选文件");
-            byte[] buffer = new byte[8192];
+        File sourceFile = File.createTempFile("official-source-", ".bin", directory);
+        MessageDigest sourceDigest = sha256Digest();
+        long sourceSize = 0;
+        int lastPercent = -1;
+        try (InputStream source = new BufferedInputStream(input);
+             BufferedOutputStream target = new BufferedOutputStream(
+                     new FileOutputStream(sourceFile))) {
+            byte[] buffer = new byte[16384];
             int count;
             while ((count = source.read(buffer)) != -1) {
-                size += count;
-                if (size > DEVICE_SLOT_SIZE) {
-                    throw new IOException("固件超过设备玩法槽上限 4.00 MiB");
+                sourceSize += count;
+                if (sourceSize > DEVICE_SLOT_SIZE || sourceSize > official.sourceSize) {
+                    throw new IOException("官网下载内容超过目录记录或 4.00 MiB 上限");
                 }
-                digest.update(buffer, 0, count);
+                sourceDigest.update(buffer, 0, count);
                 target.write(buffer, 0, count);
+                int percent = (int)((sourceSize * 100) / official.sourceSize);
+                if (listener != null && percent != lastPercent) {
+                    lastPercent = percent;
+                    listener.onProgress(Math.min(percent, 100));
+                }
             }
         } catch (IOException error) {
-            temporary.delete();
+            sourceFile.delete();
             throw error;
         }
 
-        if (size < 176) {
-            temporary.delete();
-            throw new IOException("文件过小，不是有效的 ESP32-C3 应用固件");
+        if (sourceSize != official.sourceSize) {
+            sourceFile.delete();
+            throw new IOException("官网下载不完整，实际大小与官网记录不一致");
         }
-        byte[] header = new byte[176];
-        try (FileInputStream input = new FileInputStream(temporary)) {
-            int position = 0;
-            while (position < header.length) {
-                int count = input.read(header, position, header.length - position);
-                if (count < 0) break;
-                position += count;
-            }
+        String sourceSha256 = hex(sourceDigest.digest());
+        if (!sourceSha256.equalsIgnoreCase(official.sourceSha256)) {
+            sourceFile.delete();
+            throw new IOException("官网固件 SHA-256 校验失败，已拒绝保存");
         }
-        int chipId = (header[IMAGE_CHIP_ID_OFFSET] & 0xff) |
-                ((header[IMAGE_CHIP_ID_OFFSET + 1] & 0xff) << 8);
-        if ((header[0] & 0xff) != 0xe9 ||
-                (header[APP_DESCRIPTOR_OFFSET] & 0xff) != 0x32 ||
-                (header[APP_DESCRIPTOR_OFFSET + 1] & 0xff) != 0x54 ||
-                (header[APP_DESCRIPTOR_OFFSET + 2] & 0xff) != 0xcd ||
-                (header[APP_DESCRIPTOR_OFFSET + 3] & 0xff) != 0xab) {
-            temporary.delete();
-            throw new IOException("不是可加载的应用固件；请勿选择从 0x0 烧录的 full.bin");
-        }
-        if (chipId != ESP32_C3_CHIP_ID) {
-            temporary.delete();
-            throw new IOException("固件目标芯片不是 ESP32-C3，不能安装到 AI Passport");
+        if (!"esp-merged-0x0".equals(official.format)) {
+            sourceFile.delete();
+            throw new IOException("暂不支持官网返回的固件格式：" + official.format);
         }
 
-        String sha256 = hex(digest.digest());
-        String id = sha256.substring(0, 16);
-        String project = cString(header, 80, 32);
-        String version = cString(header, 48, 32);
-        String name = displayName(project, originalName, project);
+        long appSize = sourceSize - MERGED_APP_OFFSET;
+        if (appSize < 176 || appSize > DEVICE_SLOT_SIZE) {
+            sourceFile.delete();
+            throw new IOException("官网固件中的应用镜像大小不适合设备玩法槽");
+        }
+        ImageMetadata metadata;
+        File appFile = null;
+        try {
+            metadata = validateImage(sourceFile, MERGED_APP_OFFSET);
+            appFile = File.createTempFile("official-app-", ".bin", directory);
+            extract(sourceFile, MERGED_APP_OFFSET, appFile);
+        } catch (IOException error) {
+            if (appFile != null) appFile.delete();
+            throw error;
+        } finally {
+            sourceFile.delete();
+        }
+
+        String appSha256 = digestFile(appFile);
+        String id = appSha256.substring(0, 16);
         File destination = new File(directory, id + ".bin");
-        if (destination.exists()) destination.delete();
-        if (!temporary.renameTo(destination)) {
-            copy(temporary, destination);
-            temporary.delete();
+        if (destination.exists() && !destination.delete()) {
+            appFile.delete();
+            throw new IOException("无法替换手机中的旧固件文件");
+        }
+        if (!appFile.renameTo(destination)) {
+            try {
+                copy(appFile, destination);
+            } catch (IOException error) {
+                destination.delete();
+                appFile.delete();
+                throw error;
+            }
+            appFile.delete();
         }
 
         List<FirmwareImage> items = list();
         for (FirmwareImage old : new ArrayList<>(items)) {
-            if (old.id.equals(id)) items.remove(old);
+            if (old.id.equals(id) || official.slug.equals(old.officialSlug)) {
+                items.remove(old);
+                if (!old.file.equals(destination)) old.file.delete();
+            }
         }
-        FirmwareImage image = new FirmwareImage(id, name, originalName, project, version,
-                size, sha256, System.currentTimeMillis(), destination);
+        String originalName = official.slug + "-user-slot.bin";
+        FirmwareImage image = new FirmwareImage(id, official.displayName(), originalName,
+                metadata.project, metadata.version, appSize, appSha256,
+                System.currentTimeMillis(), destination, official.slug, sourceSha256);
         items.add(0, image);
         save(items);
+        if (listener != null) listener.onProgress(100);
         return image;
     }
 
@@ -169,6 +193,8 @@ public final class FirmwareRepository {
                 json.put("sha256", item.sha256);
                 json.put("importedAt", item.importedAt);
                 json.put("file", item.file.getName());
+                json.put("officialSlug", item.officialSlug);
+                json.put("sourceSha256", item.sourceSha256);
                 array.put(json);
             } catch (JSONException ignored) { }
         }
@@ -179,23 +205,64 @@ public final class FirmwareRepository {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
-    private String queryName(Uri uri) {
-        try (Cursor cursor = context.getContentResolver().query(uri,
-                new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null)) {
-            if (cursor != null && cursor.moveToFirst()) {
-                String value = cursor.getString(0);
-                if (value != null && !value.trim().isEmpty()) return value;
-            }
-        } catch (RuntimeException ignored) { }
-        String last = uri.getLastPathSegment();
-        return last == null || last.trim().isEmpty() ? "firmware.bin" : last;
+    private static ImageMetadata validateImage(File file, long offset) throws IOException {
+        if (offset < 0 || file.length() - offset < 176) {
+            throw new IOException("文件过小，不是有效的 ESP32-C3 应用固件");
+        }
+        byte[] header = new byte[176];
+        try (RandomAccessFile input = new RandomAccessFile(file, "r")) {
+            input.seek(offset);
+            input.readFully(header);
+        }
+        int chipId = (header[IMAGE_CHIP_ID_OFFSET] & 0xff) |
+                ((header[IMAGE_CHIP_ID_OFFSET + 1] & 0xff) << 8);
+        if ((header[0] & 0xff) != 0xe9 ||
+                (header[APP_DESCRIPTOR_OFFSET] & 0xff) != 0x32 ||
+                (header[APP_DESCRIPTOR_OFFSET + 1] & 0xff) != 0x54 ||
+                (header[APP_DESCRIPTOR_OFFSET + 2] & 0xff) != 0xcd ||
+                (header[APP_DESCRIPTOR_OFFSET + 3] & 0xff) != 0xab) {
+            throw new IOException("官网文件未包含可加载的 ESP32-C3 应用镜像");
+        }
+        if (chipId != ESP32_C3_CHIP_ID) {
+            throw new IOException("官网固件目标芯片不是 ESP32-C3，不能安装到 AI Passport");
+        }
+        return new ImageMetadata(cString(header, 80, 32), cString(header, 48, 32));
+    }
+
+    private static void extract(File source, long offset, File destination) throws IOException {
+        try (RandomAccessFile input = new RandomAccessFile(source, "r");
+             BufferedOutputStream output = new BufferedOutputStream(
+                     new FileOutputStream(destination))) {
+            input.seek(offset);
+            byte[] buffer = new byte[16384];
+            int count;
+            while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+        }
+    }
+
+    private static MessageDigest sha256Digest() throws IOException {
+        try {
+            return MessageDigest.getInstance("SHA-256");
+        } catch (NoSuchAlgorithmException error) {
+            throw new IOException("系统不支持 SHA-256", error);
+        }
+    }
+
+    private static String digestFile(File file) throws IOException {
+        MessageDigest digest = sha256Digest();
+        try (FileInputStream input = new FileInputStream(file)) {
+            byte[] buffer = new byte[16384];
+            int count;
+            while ((count = input.read(buffer)) != -1) digest.update(buffer, 0, count);
+        }
+        return hex(digest.digest());
     }
 
     private static String displayName(String storedName, String originalName, String project) {
         String name = storedName == null ? "" : storedName.trim();
         boolean genericProject = "FoloToy-AI-Passport".equalsIgnoreCase(project) ||
                 "FoloToy-AI-Passport".equalsIgnoreCase(name);
-        if (!name.trim().isEmpty() && !genericProject) return name;
+        if (!name.isEmpty() && !genericProject) return name;
 
         String fileName = originalName == null ? "" : originalName.trim();
         if (fileName.toLowerCase(Locale.ROOT).endsWith(".bin")) {
@@ -205,7 +272,7 @@ public final class FirmwareRepository {
             fileName = fileName.substring(0, fileName.length() - "-user-slot".length());
         }
         if (!fileName.trim().isEmpty()) return fileName;
-        return project == null || project.trim().isEmpty() ? "自定义玩法" : project;
+        return project == null || project.trim().isEmpty() ? "官方玩法" : project;
     }
 
     private static String cString(byte[] data, int offset, int length) {
@@ -223,9 +290,23 @@ public final class FirmwareRepository {
     private static void copy(File source, File destination) throws IOException {
         try (FileInputStream input = new FileInputStream(source);
              FileOutputStream output = new FileOutputStream(destination)) {
-            byte[] buffer = new byte[8192];
+            byte[] buffer = new byte[16384];
             int count;
             while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
+        }
+    }
+
+    public interface ProgressListener {
+        void onProgress(int percent);
+    }
+
+    private static final class ImageMetadata {
+        final String project;
+        final String version;
+
+        ImageMetadata(String project, String version) {
+            this.project = project;
+            this.version = version;
         }
     }
 }

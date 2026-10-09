@@ -4,6 +4,7 @@ import android.Manifest;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.DownloadManager;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothManager;
 import android.content.BroadcastReceiver;
@@ -46,7 +47,8 @@ public class MainActivity extends Activity {
     static final String PREFS = "allowlist";
     static final String PACKAGES = "packages";
     static final String OTP = "show_otp";
-    private static final int REQUEST_IMPORT_FIRMWARE = 72;
+    private static final int REQUEST_SETUP_PERMISSIONS = 1;
+    private static final int REQUEST_DOWNLOAD_STORAGE = 2;
     private static final int COLOR_BACKGROUND = Color.rgb(10, 17, 24);
     private static final int COLOR_CARD = Color.rgb(24, 37, 49);
     private static final int COLOR_CARD_ALT = Color.rgb(35, 54, 70);
@@ -56,6 +58,7 @@ public class MainActivity extends Activity {
     private static final int COLOR_MUTED = Color.rgb(145, 169, 185);
 
     private FirmwareRepository firmwareRepository;
+    private OfficialFirmwareService officialFirmwareService;
     private TextView setupStatus;
     private Button setupButton;
     private TextView connectionStatus;
@@ -63,7 +66,11 @@ public class MainActivity extends Activity {
     private TextView slotStatus;
     private TextView selectedAppsText;
     private LinearLayout appList;
+    private LinearLayout officialFirmwareList;
     private LinearLayout firmwareList;
+    private TextView officialFirmwareStatus;
+    private ProgressBar officialFirmwareProgress;
+    private Button refreshOfficialButton;
     private ProgressBar transferProgress;
     private Button connectButton;
     private Button testButton;
@@ -71,6 +78,9 @@ public class MainActivity extends Activity {
     private Button toggleAppsButton;
     private boolean appListExpanded;
     private boolean receiverRegistered;
+    private List<OfficialFirmware> officialFirmwares = Collections.emptyList();
+    private OfficialFirmware pendingStorageDownload;
+    private String downloadingSlug;
 
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -83,10 +93,14 @@ public class MainActivity extends Activity {
         getWindow().setStatusBarColor(COLOR_BACKGROUND);
         getWindow().setNavigationBarColor(COLOR_BACKGROUND);
         firmwareRepository = new FirmwareRepository(this);
+        officialFirmwareService = new OfficialFirmwareService(this);
         setContentView(buildContent());
         refreshSetupState();
         refreshConnectionState();
         refreshFirmwareList();
+        OfficialFirmwareService.CatalogResult cached = officialFirmwareService.loadCached();
+        applyOfficialCatalog(cached, false);
+        if (cached.items.isEmpty()) refreshOfficialCatalog(false);
         startBridge(false);
     }
 
@@ -277,25 +291,51 @@ public class MainActivity extends Activity {
         notificationCard.addView(appList);
         root.addView(notificationCard);
 
-        root.addView(sectionTitle("固件玩法库"));
+        root.addView(sectionTitle("官方固件玩法库"));
         LinearLayout firmwareCard = card();
         firmwareCard.addView(text(
-                "手机可保存多个玩法；AI Passport 始终保留当前通知门户，并提供 1 个可替换玩法槽。",
+                "不再手动选择本地文件。应用从 FoloToy 官网读取已发布固件，只显示官方且不超过 4.00 MiB 的玩法。",
                 14, COLOR_MUTED, false));
         TextView formatHint = text(
-                "仅接收 ESP32-C3 应用 .bin（≤4.00 MiB），仍需确认兼容 AI Passport 硬件；不要选择 full.bin。",
+                "下载时会先核对官网大小与 SHA-256，再提取可写入 4 MiB 用户槽的应用镜像，并保存到手机 Download/AI-Passport。",
                 12, Color.rgb(244, 184, 96), false);
         formatHint.setPadding(0, dp(8), 0, 0);
         firmwareCard.addView(formatHint);
         LinearLayout firmwareActions = horizontal();
         firmwareActions.setPadding(0, dp(14), 0, 0);
-        firmwareActions.addView(actionButton("＋ 导入固件", COLOR_PRIMARY,
-                Color.rgb(7, 32, 28), view -> chooseFirmware()), weightedButton(false));
-        clearSlotButton = outlineButton("清空设备槽", view -> confirmClearSlot());
-        firmwareActions.addView(clearSlotButton, weightedButton(true));
+        refreshOfficialButton = actionButton("刷新官方列表", COLOR_PRIMARY,
+                Color.rgb(7, 32, 28), view -> refreshOfficialCatalog(true));
+        firmwareActions.addView(refreshOfficialButton, weightedButton(false));
+        firmwareActions.addView(outlineButton("打开下载目录", view -> openDownloads()),
+                weightedButton(true));
         firmwareCard.addView(firmwareActions);
+        clearSlotButton = outlineButton("清空设备玩法槽", view -> confirmClearSlot());
+        LinearLayout.LayoutParams clearParams = matchWrap();
+        clearParams.topMargin = dp(8);
+        firmwareCard.addView(clearSlotButton, clearParams);
+        officialFirmwareStatus = text("正在读取官方固件列表…", 13, COLOR_MUTED, false);
+        officialFirmwareStatus.setPadding(0, dp(12), 0, 0);
+        firmwareCard.addView(officialFirmwareStatus);
+        officialFirmwareProgress = new ProgressBar(this, null,
+                android.R.attr.progressBarStyleHorizontal);
+        officialFirmwareProgress.setMax(100);
+        officialFirmwareProgress.setProgressTintList(
+                android.content.res.ColorStateList.valueOf(COLOR_PRIMARY));
+        officialFirmwareProgress.setVisibility(View.GONE);
+        LinearLayout.LayoutParams officialProgressParams = matchWrap();
+        officialProgressParams.topMargin = dp(8);
+        firmwareCard.addView(officialFirmwareProgress, officialProgressParams);
+        TextView onlineTitle = text("官网可下载", 14, COLOR_TEXT, true);
+        onlineTitle.setPadding(0, dp(14), 0, 0);
+        firmwareCard.addView(onlineTitle);
+        officialFirmwareList = vertical();
+        officialFirmwareList.setPadding(0, dp(2), 0, 0);
+        firmwareCard.addView(officialFirmwareList);
+        TextView downloadedTitle = text("应用内已校验固件", 14, COLOR_TEXT, true);
+        downloadedTitle.setPadding(0, dp(16), 0, 0);
+        firmwareCard.addView(downloadedTitle);
         firmwareList = vertical();
-        firmwareList.setPadding(0, dp(10), 0, 0);
+        firmwareList.setPadding(0, dp(2), 0, 0);
         firmwareCard.addView(firmwareList);
         root.addView(firmwareCard);
 
@@ -313,7 +353,7 @@ public class MainActivity extends Activity {
         helpCard.addView(divider());
         helpCard.addView(keyRow("消息页长按上 + OK", "仅清空当前消息所属应用"));
         TextView recovery = text(
-                "注意：第三方固件若主动确认 OTA 或依赖不同分区表，可能无法自动返回，只能用 USB 恢复门户。",
+                "注意：即使来自官网，玩法若主动确认 OTA 或依赖不同分区表，也可能无法自动返回；异常时用 USB 恢复门户。",
                 12, Color.rgb(244, 184, 96), false);
         recovery.setPadding(0, dp(12), 0, 0);
         helpCard.addView(recovery);
@@ -390,9 +430,18 @@ public class MainActivity extends Activity {
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
                                                      int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == 1) {
+        if (requestCode == REQUEST_SETUP_PERMISSIONS) {
             refreshSetupState();
             if (hasBluetoothPermissions()) startBridge(false);
+        } else if (requestCode == REQUEST_DOWNLOAD_STORAGE) {
+            OfficialFirmware pending = pendingStorageDownload;
+            pendingStorageDownload = null;
+            if (pending != null && grantResults.length > 0 &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                beginOfficialDownload(pending);
+            } else if (pending != null) {
+                toast("需要存储权限才能写入系统下载目录");
+            }
         }
     }
 
@@ -412,12 +461,14 @@ public class MainActivity extends Activity {
     private void requestRequiredPermissions() {
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS}, 1);
+                    Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.POST_NOTIFICATIONS},
+                    REQUEST_SETUP_PERMISSIONS);
         } else if (Build.VERSION.SDK_INT >= 31) {
             requestPermissions(new String[]{Manifest.permission.BLUETOOTH_SCAN,
-                    Manifest.permission.BLUETOOTH_CONNECT}, 1);
+                    Manifest.permission.BLUETOOTH_CONNECT}, REQUEST_SETUP_PERMISSIONS);
         } else {
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, 1);
+            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                    REQUEST_SETUP_PERMISSIONS);
         }
     }
 
@@ -567,36 +618,212 @@ public class MainActivity extends Activity {
         return result;
     }
 
-    private void chooseFirmware() {
-        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE);
-        intent.setType("application/octet-stream");
-        intent.putExtra(Intent.EXTRA_MIME_TYPES,
-                new String[]{"application/octet-stream", "application/x-binary", "*/*"});
-        startActivityForResult(intent, REQUEST_IMPORT_FIRMWARE);
-    }
-
-    @Override protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQUEST_IMPORT_FIRMWARE || resultCode != RESULT_OK ||
-                data == null || data.getData() == null) return;
-        Uri uri = data.getData();
-        toast("正在校验并导入固件…");
+    private void refreshOfficialCatalog(boolean interactive) {
+        if (refreshOfficialButton == null || officialFirmwareProgress == null) return;
+        refreshOfficialButton.setEnabled(false);
+        refreshOfficialButton.setAlpha(0.55f);
+        officialFirmwareStatus.setText("正在从 FoloToy 官网同步固件目录…");
+        officialFirmwareProgress.setIndeterminate(true);
+        officialFirmwareProgress.setVisibility(View.VISIBLE);
         new Thread(() -> {
             try {
-                FirmwareImage image = firmwareRepository.importFrom(uri);
+                OfficialFirmwareService.CatalogResult result =
+                        officialFirmwareService.refreshCatalog();
                 runOnUiThread(() -> {
-                    refreshFirmwareList();
-                    toast("已导入 " + image.displayName());
+                    officialFirmwareProgress.setVisibility(View.GONE);
+                    officialFirmwareProgress.setIndeterminate(false);
+                    refreshOfficialButton.setEnabled(true);
+                    refreshOfficialButton.setAlpha(1f);
+                    applyOfficialCatalog(result, true);
                 });
             } catch (Exception error) {
-                runOnUiThread(() -> new AlertDialog.Builder(this)
-                        .setTitle("无法导入固件")
-                        .setMessage(error.getMessage())
-                        .setPositiveButton("知道了", null)
-                        .show());
+                runOnUiThread(() -> {
+                    officialFirmwareProgress.setVisibility(View.GONE);
+                    officialFirmwareProgress.setIndeterminate(false);
+                    refreshOfficialButton.setEnabled(true);
+                    refreshOfficialButton.setAlpha(1f);
+                    OfficialFirmwareService.CatalogResult cached =
+                            officialFirmwareService.loadCached();
+                    applyOfficialCatalog(cached, false);
+                    officialFirmwareStatus.setText(cached.items.isEmpty() ?
+                            "官网列表同步失败：" + safeMessage(error) :
+                            "官网同步失败，继续显示上次缓存：" + safeMessage(error));
+                    if (interactive) new AlertDialog.Builder(this)
+                            .setTitle("无法刷新官方固件")
+                            .setMessage(safeMessage(error))
+                            .setPositiveButton("知道了", null)
+                            .show();
+                });
             }
-        }, "firmware-import").start();
+        }, "official-catalog").start();
+    }
+
+    private void applyOfficialCatalog(OfficialFirmwareService.CatalogResult result,
+                                      boolean fresh) {
+        officialFirmwares = result.items;
+        if (officialFirmwareStatus != null) {
+            if (result.items.isEmpty()) {
+                officialFirmwareStatus.setText("尚未取得官方固件列表，请点击刷新。");
+            } else {
+                StringBuilder status = new StringBuilder(fresh ? "官网已同步：" : "缓存列表：");
+                status.append(result.items.size()).append(" 个可安装");
+                if (result.tooLargeCount > 0) {
+                    status.append(" · 已隐藏 ").append(result.tooLargeCount)
+                            .append(" 个超过 4.00 MiB 的固件");
+                }
+                if (result.unsupportedCount > 0) {
+                    status.append(" · ").append(result.unsupportedCount).append(" 个格式不支持");
+                }
+                officialFirmwareStatus.setText(status.toString());
+            }
+        }
+        refreshOfficialFirmwareList();
+    }
+
+    private void refreshOfficialFirmwareList() {
+        if (officialFirmwareList == null) return;
+        officialFirmwareList.removeAllViews();
+        if (officialFirmwares.isEmpty()) {
+            TextView empty = text("点击“刷新官方列表”后显示可下载玩法。",
+                    13, COLOR_MUTED, false);
+            empty.setPadding(0, dp(10), 0, dp(4));
+            officialFirmwareList.addView(empty);
+            return;
+        }
+        for (OfficialFirmware firmware : officialFirmwares) {
+            officialFirmwareList.addView(officialFirmwareRow(firmware));
+        }
+    }
+
+    private View officialFirmwareRow(OfficialFirmware firmware) {
+        LinearLayout row = vertical();
+        row.setBackground(rounded(COLOR_CARD_ALT, 14));
+        row.setPadding(dp(14), dp(12), dp(14), dp(12));
+        LinearLayout.LayoutParams rowParams = matchWrap();
+        rowParams.topMargin = dp(8);
+        row.setLayoutParams(rowParams);
+
+        LinearLayout titleRow = horizontal();
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        titleRow.addView(text(firmware.displayName(), 16, COLOR_TEXT, true),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        titleRow.addView(badge("FoloToy 官方", Color.rgb(27, 75, 70), COLOR_PRIMARY));
+        row.addView(titleRow);
+        String revision = firmware.shareVersion == null || firmware.shareVersion.isEmpty() ?
+                "官方发布" : "官方修订 " + firmware.shareVersion;
+        TextView meta = text(revision + "  ·  官网包 " + formatSize(firmware.sourceSize),
+                13, COLOR_MUTED, false);
+        meta.setPadding(0, dp(4), 0, 0);
+        row.addView(meta);
+        TextView hash = text("官网 SHA-256  " + firmware.sourceSha256.substring(0, 12) + "…",
+                12, COLOR_MUTED, false);
+        hash.setPadding(0, dp(3), 0, 0);
+        row.addView(hash);
+
+        FirmwareImage local = firmwareRepository.findOfficial(firmware);
+        Button action;
+        if (firmware.slug.equals(downloadingSlug)) {
+            action = compactButton("正在下载并校验…", view -> { });
+            action.setEnabled(false);
+            action.setAlpha(0.55f);
+        } else if (local != null) {
+            action = compactButton("已下载 · 安装到设备", view -> confirmInstall(local));
+            boolean enabled = BridgeService.isConnected() && BridgeService.isFirmwareSupported() &&
+                    !BridgeService.isTransferActive();
+            action.setEnabled(enabled);
+            action.setAlpha(enabled ? 1f : 0.45f);
+        } else {
+            action = compactButton("下载到手机", view -> requestOfficialDownload(firmware));
+        }
+        LinearLayout.LayoutParams actionParams = matchWrap();
+        actionParams.topMargin = dp(10);
+        row.addView(action, actionParams);
+        if (local != null) {
+            TextView saved = text("已校验并保存到 Download/AI-Passport",
+                    12, COLOR_PRIMARY, false);
+            saved.setPadding(0, dp(7), 0, 0);
+            row.addView(saved);
+        }
+        return row;
+    }
+
+    private void requestOfficialDownload(OfficialFirmware firmware) {
+        if (downloadingSlug != null) {
+            toast("请等待当前固件下载完成");
+            return;
+        }
+        if (Build.VERSION.SDK_INT <= 28 &&
+                checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+                        PackageManager.PERMISSION_GRANTED) {
+            pendingStorageDownload = firmware;
+            requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE},
+                    REQUEST_DOWNLOAD_STORAGE);
+            return;
+        }
+        beginOfficialDownload(firmware);
+    }
+
+    private void beginOfficialDownload(OfficialFirmware firmware) {
+        downloadingSlug = firmware.slug;
+        officialFirmwareStatus.setText("正在从 FoloToy 官网下载 “" +
+                firmware.displayName() + "”…");
+        officialFirmwareProgress.setIndeterminate(false);
+        officialFirmwareProgress.setProgress(0);
+        officialFirmwareProgress.setVisibility(View.VISIBLE);
+        refreshOfficialFirmwareList();
+        new Thread(() -> {
+            try {
+                OfficialFirmwareService.DownloadResult result = officialFirmwareService.download(
+                        firmware, firmwareRepository, percent -> runOnUiThread(() -> {
+                            officialFirmwareProgress.setProgress(percent);
+                            officialFirmwareStatus.setText("正在下载、校验并转换 “" +
+                                    firmware.displayName() + "”  " + percent + "%");
+                        }));
+                runOnUiThread(() -> {
+                    downloadingSlug = null;
+                    officialFirmwareProgress.setVisibility(View.GONE);
+                    officialFirmwareStatus.setText("已保存：" + result.downloadLocation);
+                    refreshFirmwareList();
+                    refreshOfficialFirmwareList();
+                    if (BridgeService.isConnected() && BridgeService.isFirmwareSupported()) {
+                        new AlertDialog.Builder(this)
+                                .setTitle("官方下载完成")
+                                .setMessage(result.image.displayName() + " 已通过大小、SHA-256 和 ESP32-C3 镜像校验，并保存到：\n" +
+                                        result.downloadLocation + "\n\n现在安装到设备玩法槽吗？")
+                                .setNegativeButton("稍后", null)
+                                .setPositiveButton("安装", (dialog, which) ->
+                                        confirmInstall(result.image))
+                                .show();
+                    } else {
+                        toast("官方下载并校验完成，可连接设备后安装");
+                    }
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    downloadingSlug = null;
+                    officialFirmwareProgress.setVisibility(View.GONE);
+                    officialFirmwareStatus.setText("下载失败：" + safeMessage(error));
+                    refreshFirmwareList();
+                    refreshOfficialFirmwareList();
+                    new AlertDialog.Builder(this)
+                            .setTitle("官方固件下载失败")
+                            .setMessage(safeMessage(error))
+                            .setPositiveButton("知道了", null)
+                            .show();
+                });
+            }
+        }, "official-firmware-download").start();
+    }
+
+    private void openDownloads() {
+        try {
+            startActivity(new Intent(DownloadManager.ACTION_VIEW_DOWNLOADS));
+        } catch (RuntimeException error) {
+            Intent fallback = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            fallback.addCategory(Intent.CATEGORY_OPENABLE);
+            fallback.setType("application/octet-stream");
+            startActivity(fallback);
+        }
     }
 
     private void confirmClearSlot() {
@@ -669,6 +896,7 @@ public class MainActivity extends Activity {
                 BridgeService.isSlotPresent() && !active);
         clearSlotButton.setAlpha(clearSlotButton.isEnabled() ? 1f : 0.45f);
         refreshFirmwareButtons();
+        refreshOfficialFirmwareList();
         refreshSetupState();
     }
 
@@ -676,7 +904,7 @@ public class MainActivity extends Activity {
         firmwareList.removeAllViews();
         List<FirmwareImage> images = firmwareRepository.list();
         if (images.isEmpty()) {
-            TextView empty = text("还没有导入固件。导入后可离线保存在手机中，随时替换设备玩法槽。",
+            TextView empty = text("还没有已校验固件。请从上方官网下载；下载目录会保留一份 user-slot.bin 备份。",
                     13, COLOR_MUTED, false);
             empty.setPadding(0, dp(10), 0, dp(4));
             firmwareList.addView(empty);
@@ -711,13 +939,14 @@ public class MainActivity extends Activity {
         Button install = compactButton("安装到设备", view -> confirmInstall(image));
         install.setTag("install-button");
         actions.addView(install, new LinearLayout.LayoutParams(0, dp(42), 1f));
-        Button remove = compactButton("从手机删除", view -> new AlertDialog.Builder(this)
-                .setTitle("删除本地固件？")
-                .setMessage(image.displayName() + " 将从手机固件库移除，不影响已安装到设备的版本。")
+        Button remove = compactButton("移出应用", view -> new AlertDialog.Builder(this)
+                .setTitle("移出应用固件库？")
+                .setMessage(image.displayName() + " 将从应用内移除，不影响已安装到设备的版本；Download/AI-Passport 中的备份文件仍会保留。")
                 .setNegativeButton("取消", null)
                 .setPositiveButton("删除", (dialog, which) -> {
                     firmwareRepository.delete(image);
                     refreshFirmwareList();
+                    refreshOfficialFirmwareList();
                 }).show());
         LinearLayout.LayoutParams removeParams = new LinearLayout.LayoutParams(0, dp(42), 1f);
         removeParams.leftMargin = dp(8);
@@ -917,6 +1146,11 @@ public class MainActivity extends Activity {
 
     private static String formatSize(long bytes) {
         return String.format(Locale.US, "%.2f MiB", bytes / 1048576.0);
+    }
+
+    private static String safeMessage(Throwable error) {
+        String value = error == null ? "未知错误" : error.getMessage();
+        return value == null || value.trim().isEmpty() ? "未知错误" : value.trim();
     }
 
     private void toast(String value) {

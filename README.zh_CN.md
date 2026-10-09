@@ -98,7 +98,7 @@ ANDROID_HOME=/path/to/android-sdk \
 Release APK 输出位置：
 
 ```text
-android-app/dist/AI-Passport-Portal-Android-1.4.0.apk
+android-app/dist/AI-Passport-Portal-Android-1.5.0.apk
 ```
 
 ### 首次连接
@@ -125,7 +125,9 @@ Android 强制要求用户本人确认运行时权限、通知使用权和首次
 
 手机可以保存多个 `.bin`，但当前设备分区只提供 **1 个 4 MiB 用户应用槽**。安装另一个玩法只会替换该槽，不会替换常驻通知门户。
 
-导入时会检查 ESP 应用头、ESP32-C3 芯片标识、镜像大小和 SHA-256，但这些检查不能证明板级兼容。只应安装明确为 AI Passport BSP 构建的应用镜像；不要选择 `full.bin`、bootloader 或分区表。
+APK 1.5.0 不再要求用户手动选择任意本地 `.bin`。应用通过 HTTPS 读取 FoloToy 官方已发布玩法，只显示不超过 4 MiB、格式为 `esp-merged-0x0` 的官方包；下载后核对官网记录的大小和 SHA-256。官网包是从 `0x0` 开始的合并镜像，APK 会安全提取 `0x10000` 处的应用段，检查 ESP32-C3 应用头和描述信息，再把标准化的 `*-user-slot.bin` 保存到手机 `Download/AI-Passport`，之后才允许通过 BLE 安装。超过 4 MiB 或元数据不支持的条目不会显示。
+
+这些校验仍不能证明板级完全兼容。常驻门户继续作为恢复入口，每个下载玩法仍应分别进行真机启动和返回门户测试。
 
 本项目实机测试过基于 [weibaohui/aipassport-radio](https://github.com/weibaohui/aipassport-radio) 改造的用户槽镜像。第三方源码和二进制仍受其上游许可证与兼容性约束。
 
@@ -147,16 +149,16 @@ APP_README*.md               构建、刷写、恢复和验证边界详细说明
 截至 **2026 年 10 月 9 日**：
 
 - 常驻门户 `1.2.1-portal` 已使用 ESP-IDF 5.5.3 构建成功。
-- Android 应用 `1.4.0`（`versionCode 6`）已构建为适用于 API 26–36 的签名通用 APK，并通过 `lintDebug` / `lintRelease`（0 error）。
+- Android 应用 `1.5.0`（`versionCode 7`）已构建为适用于 API 26–36 的签名通用 APK，并通过 `lintDebug` / `lintRelease`（0 error），签名和 ZIP 对齐验证也已通过。
 - Samsung S25 Ultra 上实测关闭再开启手机蓝牙后，能够自动恢复经过认证和加密的连接。
 - 通知浏览、自动亮屏/熄屏、应用筛选、按应用清空和用户固件传输已进行真机体验，用户反馈当前测试流程正常。
-- `message_store` 与 UI 计算主机测试通过。
+- `message_store` 与 UI 计算主机测试通过。2026-10-09 的目录快照筛出 12 个不超过 4 MiB 的官方已发布包，并排除 2 个超限条目；12 个源文件均通过官网大小/SHA-256 核对，且在 `0x10000` 检出 ESP32-C3 应用镜像。
 
 仍需严格区分：
 
 - 手机显示“安装完成”不等于设备端逐字节 Flash 回读验证。
 - Radio 用户槽最终回读曾在完成前因 USB 断开而中止。
-- 任意第三方用户玩法能否在重启后自动回到 factory 门户，取决于该玩法的 OTA 行为，必须逐个真机验证。
+- 任意下载玩法能否在重启后自动回到 factory 门户，取决于该玩法的 OTA 行为，必须逐个真机验证；APK 1.5.0 的“官网下载 → BLE 安装”完整流程尚未在已连接 Android 真机上复测。
 
 精确镜像大小、SHA-256、分区偏移与尚未覆盖的验证项见 [APP_README.md](APP_README.md)。
 

@@ -45,7 +45,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
   ANDROID_HOME="$HOME/Library/Android/sdk" ./tools/package_release.sh
 ```
 
-Current universal APK: `android-app/dist/AI-Passport-Portal-Android-1.4.0.apk`, version `1.4.0` (`versionCode 6`), Android 8.0 / API 26 or newer, SHA-256 `47fc1710eea610b7b1318a2d2b6eda6de69d2f3c4679f22ab91588cdafab46d9`. Private signing files are ignored by Git; see `android-app/RELEASING.md`.
+Current universal APK: `android-app/dist/AI-Passport-Portal-Android-1.5.0.apk`, version `1.5.0` (`versionCode 7`), Android 8.0 / API 26 or newer, SHA-256 `85c63f42b33cc1415c8176e68cd2b78dd6db842f3a1b642fcb8df464fae58b12`. Private signing files are ignored by Git; see `android-app/RELEASING.md`.
 
 The 16 px, 1 bpp Chinese font is derived from Noto Sans SC and includes GB2312 plus interface-specific characters. See `main/fonts/OFL-NotoSansSC.txt`. Characters outside the generated coverage and emoji may be missing.
 
@@ -80,7 +80,7 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
 
 1. Install the APK, allow Nearby devices and app notifications, then enable **AI Passport Portal** in Android's Notification access settings. The Samsung S25 Ultra is handled as a standard Android device.
 2. Select WeChat, Feishu/Lark, SMS or other apps under **Manage apps**. The 32-entry limit is shared by all apps. When full, the oldest entry is removed.
-3. Auto-connect is enabled by default in APK 1.4.0. App launch, notification-listener connection, APK replacement, phone boot and Bluetooth being turned back on can all start the foreground service and resume scanning for `PassportNotify`. **Pause auto-connect** explicitly disables this behavior. Android Force stop blocks background starts until the app is opened again.
+3. Auto-connect is enabled by default in APK 1.5.0. App launch, notification-listener connection, APK replacement, phone boot and Bluetooth being turned back on can all start the foreground service and resume scanning for `PassportNotify`. **Pause auto-connect** explicitly disables this behavior. Android Force stop blocks background starts until the app is opened again.
 4. The first line sent by the phone is the Android app label; the remaining text is the notification content. Messages are kept in device RAM and do not expire automatically.
 5. Up and Down browse messages. OK cycles through all messages and app-specific filters and never deletes. Hold Up for three seconds to ask for deletion of the current app's messages, then press OK to confirm. Hold Down toggles mute; hold OK runs self-test; double-press OK opens the firmware portal.
 6. A new message wakes the screen. Sixty seconds of inactivity turns off the LCD output and backlight while the CPU, BLE connection and notification receiver remain active. Double-press Down sleeps immediately.
@@ -91,7 +91,9 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
 
 The phone can store several `.bin` files, but the 8 MiB partition map has only **one 4 MiB user application slot**. Installing another app replaces that slot without replacing the resident factory portal.
 
-The importer validates the ESP application header, application description, ESP32-C3 chip identifier, 4 MiB limit and SHA-256. Chip matching is not board compatibility. Import only application images explicitly built with the AI Passport BSP; never import a `full.bin`, bootloader or partition table.
+APK 1.5.0 removes the arbitrary local `.bin` picker and loads the FoloToy official play catalog over HTTPS. It displays only entries with `source=official`, `isOfficial=true`, `status=published`, format `esp-merged-0x0`, and an official package size at or below 4 MiB. Oversized and unsupported entries are counted but hidden.
+
+Downloads are restricted to `ai-passport.folotoy.cn/api/download/official/<slug>` with redirects disabled. The app verifies Content-Length, catalog size and the source SHA-256. Since the official file is a merged image based at `0x0`, it is never written directly to the user slot: the app extracts the application at `0x10000`, validates the application header/descriptor and ESP32-C3 chip ID, then stores a private copy plus a normalized `Download/AI-Passport/*-user-slot.bin`. Android 10+ uses MediaStore; Android 8/9 requests legacy storage write permission before saving.
 
 A user-slot image was built from `weibaohui/aipassport-radio` for testing:
 
@@ -116,15 +118,15 @@ Verified:
 - Resident portal `1.2.1-portal` builds with ESP-IDF 5.5.3. Its application image is 1,321,360 bytes, leaving 120,432 bytes in the factory partition; SHA-256 is `e795a1f4dc1647e01f4871ee4e4d1e25b892f68b2fea0a13eb46cf510e82f383`.
 - The partition table and an earlier physical-device portal build were flashed with segmented offsets. Serial logs confirmed boot from factory offset `0x420000`, correct partitions, and successful display/audio/button/BLE initialization.
 - NVS and `cardid` matched byte-for-byte before and after segmented flashing.
-- Android APK 1.3 was physically exercised on a Samsung S25 Ultra (`SM-S9380`). The current 1.4.0 (`versionCode 6`) is signed with a dedicated release key and passes `assembleDebug`, `lintDebug`, `assembleRelease`, `lintRelease` and `apksigner`; its manifest declares API 26–36. This exact 1.4.0 package has not yet been reinstalled on the phone.
+- Android APK 1.3 was physically exercised on a Samsung S25 Ultra (`SM-S9380`). The current 1.5.0 (`versionCode 7`) is signed with a dedicated release key and passes `assembleDebug`, `lintDebug`, `assembleRelease`, `lintRelease`, `apksigner` and `zipalign`; its manifest declares API 26–36. This exact 1.5.0 package has not yet been reinstalled on the phone.
 - Turning phone Bluetooth off and back on triggered an automatic reconnect; device logs reached `encrypted=1 authenticated=1` without manually pressing Connect in the app.
 - The Radio image passes ESP32-C3 image validation and fits the slot. The APK reported a complete 4,051,696-byte transfer, and the user later reported the tested physical flow working normally.
-- Host tests for `message_store`, UI pixel calculations and `git diff --check` pass.
+- Host tests for `message_store`, UI pixel calculations and `git diff --check` pass. The October 9 catalog snapshot selected 12 published official packages at or below 4 MiB and excluded two oversized entries; all 12 audited downloads matched the official size/SHA-256 and contained an ESP32-C3 application at `0x10000`.
 
 Not equivalent to completed verification:
 
 - The final Radio slot readback stopped at 72% when USB disconnected, so there is no complete device-side SHA-256 readback. A phone-side “installation complete” status is not byte-for-byte verification.
-- The exact final `1.2.1-portal` image and APK 1.4.0 have not both been installed as an exact pair. The old test APK used a debug signature, so it must be uninstalled before installing the newly signed release APK.
+- The exact final `1.2.1-portal` image and APK 1.5.0 have not both been installed as an exact pair, and the complete APK 1.5.0 catalog-download-to-BLE path has not yet been exercised on a connected phone. The old test APK used a debug signature, so it must be uninstalled before installing the newly signed release APK.
 - Restarting Radio and observing OTA rollback to the factory portal still needs a captured boot/restart verification for that exact image.
 - Physical button feel and timing should still be checked for “OK cycles sources only” and “hold Up, then OK, clears only the active app”; source code and host tests do not replace that check.
 

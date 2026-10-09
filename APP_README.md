@@ -41,7 +41,7 @@ JAVA_HOME=/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home \
   ANDROID_HOME="$HOME/Library/Android/sdk" ./tools/package_release.sh
 ```
 
-正式通用 APK：`android-app/dist/AI-Passport-Portal-Android-1.4.0.apk`，版本 `1.4.0`（versionCode 6），支持 Android 8.0 / API 26 及以上，SHA-256：`47fc1710eea610b7b1318a2d2b6eda6de69d2f3c4679f22ab91588cdafab46d9`。私有密钥和 `release-signing.properties` 均被 Git 忽略；发布方法见 `android-app/RELEASING.md`。
+正式通用 APK：`android-app/dist/AI-Passport-Portal-Android-1.5.0.apk`，版本 `1.5.0`（versionCode 7），支持 Android 8.0 / API 26 及以上，SHA-256：`85c63f42b33cc1415c8176e68cd2b78dd6db842f3a1b642fcb8df464fae58b12`。私有密钥和 `release-signing.properties` 均被 Git 忽略；发布方法见 `android-app/RELEASING.md`。
 
 中文字体来自 Noto Sans SC，16 px / 1 bpp，包含 GB2312 及部分界面字。授权见 `main/fonts/OFL-NotoSansSC.txt`；GB2312 以外文字和表情可能缺字。
 
@@ -78,7 +78,7 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
 
 1. 安装 APK 后点击“快速启用”。应用会依次检查附近设备/定位权限、蓝牙、通知使用权、通知应用选择和设备连接，并自动跳过已完成步骤。Android 仍要求用户本人确认权限、通知使用权和首次安全配对，APK 无法静默绕过。应用不依赖三星专用 SDK，Samsung S25 Ultra 按普通 Android 设备处理。
 2. 可一键勾选本机已安装的微信、飞书/Lark、默认短信、QQ、钉钉、WhatsApp、Telegram，也可在“管理应用”中手动调整。当前 32 条上限是**所有应用合计**，不是每个应用各 32 条；列表满时淘汰最早一条。
-3. APK 1.4.0 默认开启自动连接。首次安全配对后，应用启动、通知监听器连接、APK 更新、手机开机和蓝牙重新开启都会尝试启动前台服务并自动扫描、连接 `PassportNotify`。界面的“暂停自动连接”会明确关闭该行为；不要用 Android 的“强行停止”测试自动连接，因为系统会阻止该应用继续接收启动广播，直到用户再次打开应用。
+3. APK 1.5.0 默认开启自动连接。首次安全配对后，应用启动、通知监听器连接、APK 更新、手机开机和蓝牙重新开启都会尝试启动前台服务并自动扫描、连接 `PassportNotify`。界面的“暂停自动连接”会明确关闭该行为；不要用 Android 的“强行停止”测试自动连接，因为系统会阻止该应用继续接收启动广播，直到用户再次打开应用。
 4. 手机发送的正文第一行是 Android 应用标签，后续行为按应用来源分组。消息保存在 AI Passport RAM 中，重启后清空，不会因超时自动删除。
 5. 消息页按键：
    - 短按上 / 下：在当前筛选范围内浏览上一条 / 下一条。
@@ -95,7 +95,9 @@ python -m esptool --chip esp32c3 -p /dev/cu.usbmodem1101 -b 460800 \
 
 手机可以保存多个 `.bin`，但当前 8 MB AI Passport 只有 **1 个 4 MiB 用户玩法槽**。安装另一玩法会替换设备槽里的旧玩法，不会替换 factory 门户。
 
-APK 导入时检查 ESP 应用头、应用描述、ESP32-C3 芯片标识、4 MiB 大小上限和 SHA-256。芯片匹配不等于板级兼容，只应安装明确复用 AI Passport BSP 的应用固件；不要导入 `full.bin`、bootloader 或分区表。
+APK 1.5.0 已移除任意本地 `.bin` 选择器，改为通过 HTTPS 读取 FoloToy 官方玩法目录。列表只保留 `source=official`、`isOfficial=true`、`status=published`、格式为 `esp-merged-0x0` 且官网完整包不超过 4 MiB 的条目；超限和不支持条目只计数、不展示。
+
+下载时严格限定 `ai-passport.folotoy.cn/api/download/official/<slug>`，禁止跳转，核对 Content-Length、目录大小和源包 SHA-256。由于官网包是从 `0x0` 开始的合并镜像，APK 不会把它直接写入用户槽，而是提取 `0x10000` 之后的应用镜像，检查应用头、应用描述和 ESP32-C3 芯片标识，再保存应用私有副本和 `Download/AI-Passport/*-user-slot.bin` 公共备份。Android 10 及以上使用 MediaStore；Android 8/9 首次保存时需要存储写入权限。
 
 已针对用户槽构建 `weibaohui/aipassport-radio`：
 
@@ -120,15 +122,15 @@ Radio 为满足 4 MiB 槽位使用 size optimization、关闭运行日志、关�
 - 最终门户 `1.2.1-portal` 用 ESP-IDF 5.5.3 构建成功；应用镜像大小 1,321,360 字节，factory 分区余量 120,432 字节，SHA-256：`e795a1f4dc1647e01f4871ee4e4d1e25b892f68b2fea0a13eb46cf510e82f383`。
 - 门户分区表和前一实机版门户已按分段偏移刷入当前 ESP32-C3；串口日志确认从 `0x420000` factory 分区启动、分区表正确、显示/音频/按键/BLE 初始化成功。最终 `1.2.1-portal` 仍需设备重新接入 USB 后只覆写 `0x420000` 应用段。
 - NVS 与 `cardid` 在刷写前后回读逐字节一致。
-- Android APK 1.3（versionCode 4）曾在 Samsung S25 Ultra（SM-S9380）完成实机链路验证。当前 1.4.0（versionCode 6）已构建为独立发布密钥签名的通用 APK，通过 `assembleDebug`、`lintDebug`、`assembleRelease`、`lintRelease` 与 `apksigner` 验证；最低 API 26、目标 API 36。该精确 1.4.0 包尚未在真机重新安装。
+- Android APK 1.3（versionCode 4）曾在 Samsung S25 Ultra（SM-S9380）完成实机链路验证。当前 1.5.0（versionCode 7）已构建为独立发布密钥签名的通用 APK，通过 `assembleDebug`、`lintDebug`、`assembleRelease`、`lintRelease`、`apksigner` 与 `zipalign` 验证；最低 API 26、目标 API 36。该精确 1.5.0 包尚未在真机重新安装。
 - 实测关闭再开启手机蓝牙后，无需在 APK 中手动点击连接：手机重新扫描，设备日志确认重新连接并达到 `encrypted=1 authenticated=1`。
 - Radio 应用镜像通过 ESP32-C3 image 校验并满足 4 MiB 槽位，已导入手机固件库；APK 报告 4,051,696 字节传输达到 100% 并返回“安装完成”。用户随后反馈实机测试无异常。
-- `message_store` 主机单元测试、UI 像素计算测试和 `git diff --check` 通过。
+- `message_store` 主机单元测试、UI 像素计算测试和 `git diff --check` 通过。2026-10-09 读取官网目录时筛出 12 个不超过 4 MiB 的官方已发布包并排除 2 个超限条目；逐个下载审计的 12 个源包均匹配官网大小和 SHA-256，且 `0x10000` 处均为 ESP32-C3 应用。
 
 仍需实机完成或补证：
 
 - Radio 用户槽回读在 72% 时因设备 USB 断开而中止，因此尚未取得设备端完整 SHA-256；不能把手机端“安装完成”当作逐字节回读校验。
-- 最终门户 `1.2.1-portal` 与 Android APK 1.4.0 的真机安装；旧 Debug 签名与新 Release 签名不同，测试手机需要先卸载旧 Debug 版再安装正式版。
+- 最终门户 `1.2.1-portal` 与 Android APK 1.5.0 的真机安装，以及 APK 1.5.0 的“刷新官方列表 → 下载到 Download/AI-Passport → BLE 安装”完整链路；旧 Debug 签名与新 Release 签名不同，测试手机需要先卸载旧 Debug 版再安装正式版。
 - 重启 Radio 后确认 OTA 回滚确实返回 factory 门户。
 - 实体按键验证“短按 OK 只切换应用”和“长按上 + OK 仅清空当前应用”；源码和主机单测通过不等于按键手感已验收。
 
