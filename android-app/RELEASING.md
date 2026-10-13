@@ -1,6 +1,6 @@
 # Android release packaging / Android 发布打包
 
-The Android app is a single universal APK because it contains no native ABI-specific libraries. It supports BLE-capable phones and tablets running Android 8.0 (API 26) or newer.
+The Bluetooth firmware installer is a single universal APK because it contains no native ABI-specific libraries. It supports BLE-capable phones and tablets running Android 8.0 (API 26) or newer.
 
 Android 应用不包含按 CPU 架构区分的原生库，因此发布的是一个通用 APK；支持具备 BLE 的 Android 8.0（API 26）及以上手机和平板。
 
@@ -29,15 +29,15 @@ The script runs `assembleRelease` and `lintRelease`, verifies APK signing and ZI
 
 ## First-run boundary / 首次使用边界
 
-The in-app **Quick setup** button guides users through every required step. Android still requires the user to approve runtime permissions, Notification access and the first secure Bluetooth pairing. These security confirmations cannot be silently granted by an APK.
+Open the app and tap **Connect device**. Android still requires the user to approve runtime permissions, notification permission and the first secure Bluetooth pairing. These security confirmations cannot be silently granted by an APK.
 
 应用内的“快速启用”会按顺序引导所有必要步骤；但 Android 仍要求用户本人确认运行时权限、通知使用权和首次安全蓝牙配对，APK 无法静默绕过这些系统安全确认。
 
 ## Official firmware downloads / 官方固件下载
 
-APK 1.5.0 obtains published firmware metadata and binaries only from `https://ai-passport.folotoy.cn`. It hides packages over 4 MiB or with unsupported metadata, verifies the official byte count and SHA-256, extracts the user application from the official `esp-merged-0x0` package at offset `0x10000`, and saves the normalized image under `Download/AI-Passport` before BLE installation.
+APK 2.0.0 obtains published firmware metadata and binaries only from `https://ai-passport.folotoy.cn`. It hides source packages larger than the device's largest slot or with unsupported metadata, verifies the official byte count and SHA-256, extracts the user application from the official `esp-merged-0x0` package at offset `0x10000`, and saves the normalized image under `Download/AI-Passport` before BLE installation.
 
-APK 1.5.0 只从 `https://ai-passport.folotoy.cn` 获取已发布玩法目录和二进制。超过 4 MiB 或元数据不支持的包不会展示；应用会核对官网大小与 SHA-256，从官方 `esp-merged-0x0` 包的 `0x10000` 偏移提取用户应用，并在 BLE 安装前保存标准化镜像到 `Download/AI-Passport`。
+APK 2.0.0 只从 `https://ai-passport.folotoy.cn` 获取已发布玩法目录和二进制。源包超过设备最大玩法槽，或元数据不支持时不会展示；应用会核对官网大小与 SHA-256，从官方 `esp-merged-0x0` 包的 `0x10000` 偏移提取用户应用，并在 BLE 安装前保存标准化镜像到 `Download/AI-Passport`。
 
 Android 10 and newer use MediaStore and need no broad storage permission. Android 8/9 request `WRITE_EXTERNAL_STORAGE` only when the user starts an official download; the permission is capped at API 28 in the manifest.
 

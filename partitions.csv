@@ -1,10 +1,11 @@
-# Preserve NVS, PHY and cardid offsets. Radio/custom firmware gets one 4 MiB OTA slot.
-# Flash this layout with segmented images only; do not write a gap-padded merged image across cardid.
+# Compact resident installer plus three selectable firmware slots.
+# The cardid partition remains at its original fixed address.
 # Name,    Type, SubType, Offset,   Size,      Flags
 nvs,       data, nvs,     0x9000,   0x6000,
 phy_init,  data, phy,     0xf000,   0x1000,
-user_app,  app,  ota_0,   0x10000,  0x400000,
+factory,   app,  factory, 0x10000,  0x120000,
+user_a,    app,  ota_0,   0x130000, 0x170000,
+user_b,    app,  ota_1,   0x2a0000, 0x170000,
 cardid,    data, nvs,     0x410000, 0x4000,
 otadata,   data, ota,     0x414000, 0x2000,
-factory,   app,  factory, 0x420000, 0x160000,
-storage,   data, spiffs,  0x580000, 0x280000,
+user_c,    app,  ota_2,   0x420000, 0x3e0000,

@@ -127,7 +127,7 @@ public final class OfficialFirmwareService {
             JSONObject firmware = play.optJSONObject("firmware");
             long size = firmware == null ? play.optLong("firmwareSize") :
                     firmware.optLong("size", play.optLong("firmwareSize"));
-            if (size > FirmwareRepository.DEVICE_SLOT_SIZE) {
+            if (size > FirmwareRepository.MAX_SOURCE_SIZE) {
                 tooLargeCount++;
                 continue;
             }
@@ -158,7 +158,7 @@ public final class OfficialFirmwareService {
         if (!SLUG.matcher(firmware.slug).matches() ||
                 !firmware.downloadPath.equals(DOWNLOAD_PREFIX + firmware.slug) ||
                 !SHA256.matcher(firmware.sourceSha256).matches() ||
-                firmware.sourceSize <= 0 || firmware.sourceSize > FirmwareRepository.DEVICE_SLOT_SIZE ||
+                firmware.sourceSize <= 0 || firmware.sourceSize > FirmwareRepository.MAX_SOURCE_SIZE ||
                 !"esp-merged-0x0".equals(firmware.format)) {
             throw new IOException("固件目录记录未通过安全校验");
         }
@@ -175,7 +175,7 @@ public final class OfficialFirmwareService {
         connection.setRequestMethod("GET");
         connection.setRequestProperty("Accept", "application/json, application/octet-stream");
         connection.setRequestProperty("Accept-Encoding", "identity");
-        connection.setRequestProperty("User-Agent", "AI-Passport-Portal-Android/1.5");
+        connection.setRequestProperty("User-Agent", "AI-Passport-Installer-Android/2.0");
         return connection;
     }
 

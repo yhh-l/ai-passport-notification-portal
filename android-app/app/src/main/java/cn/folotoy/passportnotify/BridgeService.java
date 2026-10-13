@@ -68,6 +68,7 @@ public class BridgeService extends Service {
     private static final int OP_FIRMWARE_FINISH = 4;
     private static final int OP_FIRMWARE_CLEAR = 5;
     private static final int OP_STATUS_READ = 6;
+    private static final int OP_FIRMWARE_SELECT = 7;
     private static final int PHASE_PREPARE = 0;
     private static final int PHASE_START = 1;
     private static final int PHASE_DATA = 2;
@@ -82,6 +83,10 @@ public class BridgeService extends Service {
     private static volatile int currentProgress;
     private static volatile boolean currentSlotPresent;
     private static volatile String currentSlotName = "未读取";
+    private static volatile DeviceSlot[] currentSlots = new DeviceSlot[0];
+    private static volatile int currentSelectedSlot = -1;
+    private static volatile long currentTotalFree;
+    private static volatile long currentLargestFreeSlot;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Queue<byte[]> packets = new ArrayDeque<>();
@@ -102,7 +107,8 @@ public class BridgeService extends Service {
     private int pendingOperation = OP_NONE;
     private int pendingLength;
     private boolean statusReadPending;
-    private boolean clearSlotPending;
+    private int clearSlotPending = -1;
+    private int selectSlotPending = -1;
 
     private boolean firmwareActive;
     private int firmwarePhase;
@@ -110,6 +116,7 @@ public class BridgeService extends Service {
     private long firmwareSize;
     private long firmwareSent;
     private String firmwareName;
+    private int firmwareTargetSlot = -1;
     private byte[] firmwareChunk;
     private byte[] firmwareStartPacket;
     private PowerManager.WakeLock firmwareWakeLock;
@@ -121,21 +128,33 @@ public class BridgeService extends Service {
         return true;
     }
 
-    public static boolean installFirmware(File file, String displayName) {
+    public static boolean installFirmware(File file, String displayName, int slot) {
         BridgeService service = instance;
         if (service == null || !currentConnected || !currentFirmwareSupported ||
                 currentTransferActive || file == null || !file.isFile()) return false;
-        service.handler.post(() -> service.beginFirmwareInstall(file, displayName));
+        service.handler.post(() -> service.beginFirmwareInstall(file, displayName, slot));
         return true;
     }
 
-    public static boolean clearDeviceFirmware() {
+    public static boolean clearDeviceFirmware(int slot) {
         BridgeService service = instance;
         if (service == null || !currentConnected || !currentFirmwareSupported || currentTransferActive) {
             return false;
         }
         service.handler.post(() -> {
-            service.clearSlotPending = true;
+            service.clearSlotPending = slot;
+            service.pump();
+        });
+        return true;
+    }
+
+    public static boolean selectDeviceFirmware(int slot) {
+        BridgeService service = instance;
+        if (service == null || !currentConnected || !currentFirmwareSupported || currentTransferActive) {
+            return false;
+        }
+        service.handler.post(() -> {
+            service.selectSlotPending = slot;
             service.pump();
         });
         return true;
@@ -148,6 +167,42 @@ public class BridgeService extends Service {
     public static int transferProgress() { return currentProgress; }
     public static boolean isSlotPresent() { return currentSlotPresent; }
     public static String slotName() { return currentSlotName; }
+    public static int selectedSlot() { return currentSelectedSlot; }
+    public static long totalFree() { return currentTotalFree; }
+    public static long largestFreeSlot() { return currentLargestFreeSlot; }
+    public static DeviceSlot[] slots() { return Arrays.copyOf(currentSlots, currentSlots.length); }
+
+    public static int findInstallSlot(long imageSize) {
+        int best = -1;
+        long bestCapacity = Long.MAX_VALUE;
+        for (DeviceSlot slot : currentSlots) {
+            if (!slot.available || slot.present || imageSize > slot.capacity) continue;
+            if (slot.capacity < bestCapacity) {
+                best = slot.index;
+                bestCapacity = slot.capacity;
+            }
+        }
+        return best;
+    }
+
+    public static final class DeviceSlot {
+        public final int index;
+        public final boolean available;
+        public final boolean present;
+        public final long capacity;
+        public final long size;
+        public final String name;
+
+        DeviceSlot(int index, boolean available, boolean present,
+                   long capacity, long size, String name) {
+            this.index = index;
+            this.available = available;
+            this.present = present;
+            this.capacity = capacity;
+            this.size = size;
+            this.name = name;
+        }
+    }
 
     public static boolean isAutoConnectEnabled(Context context) {
         return context.getSharedPreferences(CONNECTION_PREFS, MODE_PRIVATE)
@@ -207,7 +262,7 @@ public class BridgeService extends Service {
                 PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
         return new Notification.Builder(this, CHANNEL)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle("AI Passport 门户")
+                .setContentTitle("AI Passport 蓝牙安装器")
                 .setContentText(text)
                 .setContentIntent(pending)
                 .setOngoing(true)
@@ -491,10 +546,7 @@ public class BridgeService extends Service {
     }
 
     private void connectionReady() {
-        if (!connectedGreetingSent) {
-            connectedGreetingSent = true;
-            enqueue(3, "手机已连接 · AI Passport 门户");
-        }
+        connectedGreetingSent = true;
         if (currentFirmwareSupported) statusReadPending = true;
         pump();
     }
@@ -508,6 +560,10 @@ public class BridgeService extends Service {
         currentProgress = 0;
         currentConnected = false;
         currentFirmwareSupported = false;
+        currentSlots = new DeviceSlot[0];
+        currentSelectedSlot = -1;
+        currentTotalFree = 0;
+        currentLargestFreeSlot = 0;
         notificationCharacteristic = null;
         firmwareControlCharacteristic = null;
         firmwareDataCharacteristic = null;
@@ -519,7 +575,8 @@ public class BridgeService extends Service {
         mtuPending = false;
         connectedGreetingSent = false;
         statusReadPending = false;
-        clearSlotPending = false;
+        clearSlotPending = -1;
+        selectSlotPending = -1;
         mtu = 23;
         gatt = null;
         try { device.close(); } catch (SecurityException ignored) { }
@@ -557,11 +614,15 @@ public class BridgeService extends Service {
         pump();
     }
 
-    private void beginFirmwareInstall(File file, String displayName) {
+    private void beginFirmwareInstall(File file, String displayName, int slot) {
         if (firmwareActive || !currentFirmwareSupported || gatt == null) return;
         long size = file.length();
-        if (size < 176 || size > FirmwareRepository.DEVICE_SLOT_SIZE) {
-            setStatus("固件大小不符合设备玩法槽限制");
+        DeviceSlot target = null;
+        for (DeviceSlot candidate : currentSlots) {
+            if (candidate.index == slot) target = candidate;
+        }
+        if (size < 176 || target == null || !target.available || size > target.capacity) {
+            setStatus("固件大小超过所选设备槽容量");
             return;
         }
         try {
@@ -571,17 +632,19 @@ public class BridgeService extends Service {
             return;
         }
         byte[] name = utf8Limited(displayName, 47);
-        firmwareStartPacket = new byte[7 + name.length];
+        firmwareStartPacket = new byte[8 + name.length];
         firmwareStartPacket[0] = (byte)0xf0;
         firmwareStartPacket[1] = 0x01;
+        firmwareStartPacket[2] = (byte)slot;
         int intSize = (int)size;
-        firmwareStartPacket[2] = (byte)intSize;
-        firmwareStartPacket[3] = (byte)(intSize >> 8);
-        firmwareStartPacket[4] = (byte)(intSize >> 16);
-        firmwareStartPacket[5] = (byte)(intSize >> 24);
-        firmwareStartPacket[6] = (byte)name.length;
-        System.arraycopy(name, 0, firmwareStartPacket, 7, name.length);
+        firmwareStartPacket[3] = (byte)intSize;
+        firmwareStartPacket[4] = (byte)(intSize >> 8);
+        firmwareStartPacket[5] = (byte)(intSize >> 16);
+        firmwareStartPacket[6] = (byte)(intSize >> 24);
+        firmwareStartPacket[7] = (byte)name.length;
+        System.arraycopy(name, 0, firmwareStartPacket, 8, name.length);
         firmwareName = new String(name, StandardCharsets.UTF_8);
+        firmwareTargetSlot = slot;
         firmwareSize = size;
         firmwareSent = 0;
         firmwareChunk = null;
@@ -647,10 +710,21 @@ public class BridgeService extends Service {
             }
         }
 
-        if (clearSlotPending) {
-            clearSlotPending = false;
-            issueWrite(firmwareControlCharacteristic, new byte[]{(byte)0xf0, 0x05},
+        if (clearSlotPending >= 0) {
+            int slot = clearSlotPending;
+            clearSlotPending = -1;
+            issueWrite(firmwareControlCharacteristic,
+                    new byte[]{(byte)0xf0, 0x05, (byte)slot},
                     OP_FIRMWARE_CLEAR);
+            return;
+        }
+
+        if (selectSlotPending >= 0) {
+            int slot = selectSlotPending;
+            selectSlotPending = -1;
+            issueWrite(firmwareControlCharacteristic,
+                    new byte[]{(byte)0xf0, 0x06, (byte)slot},
+                    OP_FIRMWARE_SELECT);
             return;
         }
 
@@ -702,7 +776,8 @@ public class BridgeService extends Service {
         if (result != BluetoothGatt.GATT_SUCCESS) {
             gattBusy = false;
             pendingOperation = OP_NONE;
-            if (firmwareActive || operation == OP_FIRMWARE_CLEAR) {
+            if (firmwareActive || operation == OP_FIRMWARE_CLEAR ||
+                    operation == OP_FIRMWARE_SELECT) {
                 failFirmware("固件操作启动失败");
             } else {
                 setStatus("消息发送失败，请检查配对状态");
@@ -735,7 +810,8 @@ public class BridgeService extends Service {
         pendingOperation = OP_NONE;
         pendingLength = 0;
         if (status != BluetoothGatt.GATT_SUCCESS) {
-            if (firmwareActive || operation == OP_FIRMWARE_CLEAR) {
+            if (firmwareActive || operation == OP_FIRMWARE_CLEAR ||
+                    operation == OP_FIRMWARE_SELECT) {
                 failFirmware("固件写入失败（" + status + "）");
             } else {
                 currentPacket = null;
@@ -770,16 +846,30 @@ public class BridgeService extends Service {
             setStatus("固件已写入，正在校验");
         } else if (operation == OP_FIRMWARE_CLEAR) {
             statusReadPending = true;
-            setStatus("设备玩法槽已清空");
+            setStatus("设备玩法槽已清空，正在刷新空间");
+        } else if (operation == OP_FIRMWARE_SELECT) {
+            statusReadPending = true;
+            setStatus("已切换设备玩法选择");
         }
         pump();
+    }
+
+    private static long readUnsignedInt(byte[] value, int offset) {
+        return (value[offset] & 0xffL) |
+                ((value[offset + 1] & 0xffL) << 8) |
+                ((value[offset + 2] & 0xffL) << 16) |
+                ((value[offset + 3] & 0xffL) << 24);
+    }
+
+    private static String formatBytes(long bytes) {
+        return String.format(java.util.Locale.ROOT, "%.2f MiB", bytes / 1048576.0);
     }
 
     private void handleStatusRead(BluetoothGatt device, byte[] value, int status) {
         if (device != gatt || pendingOperation != OP_STATUS_READ) return;
         gattBusy = false;
         pendingOperation = OP_NONE;
-        if (status != BluetoothGatt.GATT_SUCCESS || value == null || value.length < 13 || value[0] != 1) {
+        if (status != BluetoothGatt.GATT_SUCCESS || value == null || value.length < 13) {
             if (firmwareActive) failFirmware("设备未返回有效的安装状态");
             else {
                 setStatus("已连接 · 无法读取设备玩法槽");
@@ -790,26 +880,92 @@ public class BridgeService extends Service {
 
         int state = value[1] & 0xff;
         int progress = value[2] & 0xff;
-        currentSlotPresent = value[3] != 0;
-        int nameLength = Math.min(value[12] & 0xff, value.length - 13);
-        currentSlotName = nameLength == 0 ? "自定义玩法槽" :
-                new String(value, 13, nameLength, StandardCharsets.UTF_8);
+        if (value[0] == 2) {
+            if (value.length < 18) {
+                failFirmware("设备返回的多槽状态不完整");
+                return;
+            }
+            currentSelectedSlot = value[3] & 0xff;
+            if (currentSelectedSlot == 0xff) currentSelectedSlot = -1;
+            int count = value[5] & 0xff;
+            currentTotalFree = readUnsignedInt(value, 10);
+            currentLargestFreeSlot = readUnsignedInt(value, 14);
+            DeviceSlot[] slots = new DeviceSlot[count];
+            int offset = 18;
+            for (int item = 0; item < count; item++) {
+                if (offset + 11 > value.length) {
+                    failFirmware("设备返回的槽位状态不完整");
+                    return;
+                }
+                int index = value[offset++] & 0xff;
+                int flags = value[offset++] & 0xff;
+                long capacity = readUnsignedInt(value, offset);
+                offset += 4;
+                long imageSize = readUnsignedInt(value, offset);
+                offset += 4;
+                int nameLength = value[offset++] & 0xff;
+                if (offset + nameLength > value.length) {
+                    failFirmware("设备返回的槽位名称不完整");
+                    return;
+                }
+                String name = nameLength == 0 ? "空槽" :
+                        new String(value, offset, nameLength, StandardCharsets.UTF_8);
+                offset += nameLength;
+                slots[item] = new DeviceSlot(index, (flags & 0x01) != 0,
+                        (flags & 0x02) != 0, capacity, imageSize, name);
+            }
+            currentSlots = slots;
+            DeviceSlot selected = null;
+            for (DeviceSlot slot : slots) {
+                if (slot.index == currentSelectedSlot) selected = slot;
+            }
+            currentSlotPresent = selected != null && selected.present;
+            currentSlotName = currentSlotPresent ? selected.name : "未选择";
+        } else if (value[0] == 1) {
+            currentSlotPresent = value[3] != 0;
+            int nameLength = Math.min(value[12] & 0xff, value.length - 13);
+            currentSlotName = nameLength == 0 ? "自定义玩法槽" :
+                    new String(value, 13, nameLength, StandardCharsets.UTF_8);
+            currentSelectedSlot = currentSlotPresent ? 0 : -1;
+            currentSlots = new DeviceSlot[]{new DeviceSlot(0, true, currentSlotPresent,
+                    FirmwareRepository.LEGACY_SLOT_SIZE,
+                    currentSlotPresent ? readUnsignedInt(value, 4) : 0,
+                    currentSlotName)};
+            currentTotalFree = currentSlotPresent ? 0 : FirmwareRepository.LEGACY_SLOT_SIZE;
+            currentLargestFreeSlot = currentTotalFree;
+        } else {
+            if (firmwareActive) failFirmware("设备固件协议版本不受支持");
+            else setStatus("已连接 · 设备固件协议版本不受支持");
+            return;
+        }
         currentProgress = progress;
 
         if (firmwareActive && firmwarePhase == PHASE_VERIFY) {
-            if (state == 2 && currentSlotPresent) {
+            boolean installed = false;
+            for (DeviceSlot slot : currentSlots) {
+                if (slot.index == firmwareTargetSlot && slot.present) installed = true;
+            }
+            if (state == 2 && installed) {
                 firmwareActive = false;
                 currentTransferActive = false;
                 currentProgress = 100;
+                firmwareChunk = null;
+                firmwareStartPacket = null;
+                firmwareTargetSlot = -1;
+                firmwareSize = 0;
+                firmwareSent = 0;
+                firmwarePhase = PHASE_PREPARE;
                 releaseFirmwareWakeLock();
-                setStatus("安装完成 · 在设备上双击 OK 进入玩法门户");
+                setStatus("安装完成 · 可在设备上选择并启动玩法");
             } else {
                 failFirmware("设备校验固件失败");
                 return;
             }
         } else {
-            setStatus(currentSlotPresent ? "已连接 · 设备槽：" + currentSlotName :
-                    "已连接 · 设备玩法槽为空");
+            int installedCount = 0;
+            for (DeviceSlot slot : currentSlots) if (slot.present) installedCount++;
+            setStatus("已连接 · 已安装 " + installedCount + " 个玩法 · 剩余 " +
+                    formatBytes(currentTotalFree));
         }
         emitStatus();
         pump();
@@ -824,6 +980,7 @@ public class BridgeService extends Service {
         currentProgress = 0;
         firmwareChunk = null;
         firmwareStartPacket = null;
+        firmwareTargetSlot = -1;
         firmwarePhase = PHASE_PREPARE;
         gattBusy = false;
         pendingOperation = OP_NONE;
@@ -870,6 +1027,10 @@ public class BridgeService extends Service {
         firmwareStatusCharacteristic = null;
         currentConnected = false;
         currentFirmwareSupported = false;
+        currentSlots = new DeviceSlot[0];
+        currentSelectedSlot = -1;
+        currentTotalFree = 0;
+        currentLargestFreeSlot = 0;
         if (activeGatt == null) return;
         try {
             activeGatt.disconnect();

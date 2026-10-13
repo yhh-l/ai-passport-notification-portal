@@ -20,7 +20,7 @@ fi
 
 SOURCE_APK="app/build/outputs/apk/release/app-release.apk"
 DEST_DIR="$ANDROID_ROOT/dist"
-DEST_APK="$DEST_DIR/AI-Passport-Portal-Android-${VERSION_NAME}.apk"
+DEST_APK="$DEST_DIR/AI-Passport-Bluetooth-Installer-Android-${VERSION_NAME}.apk"
 mkdir -p "$DEST_DIR"
 cp "$SOURCE_APK" "$DEST_APK"
 

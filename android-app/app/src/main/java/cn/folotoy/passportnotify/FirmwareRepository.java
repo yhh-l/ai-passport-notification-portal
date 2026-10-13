@@ -22,8 +22,10 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 public final class FirmwareRepository {
-    public static final long DEVICE_SLOT_SIZE = 0x400000L;
+    public static final long DEVICE_SLOT_SIZE = 0x3e0000L;
+    public static final long LEGACY_SLOT_SIZE = 0x400000L;
     private static final long MERGED_APP_OFFSET = 0x10000L;
+    public static final long MAX_SOURCE_SIZE = MERGED_APP_OFFSET + DEVICE_SLOT_SIZE;
     private static final String PREFS = "firmware_library";
     private static final String KEY_ITEMS = "items";
     private static final int APP_DESCRIPTOR_OFFSET = 32;
@@ -75,8 +77,8 @@ public final class FirmwareRepository {
                                                      OfficialFirmware official,
                                                      ProgressListener listener)
             throws IOException {
-        if (official.sourceSize <= 0 || official.sourceSize > DEVICE_SLOT_SIZE) {
-            throw new IOException("官网固件超过设备玩法槽上限 4.00 MiB");
+        if (official.sourceSize <= 0 || official.sourceSize > MAX_SOURCE_SIZE) {
+            throw new IOException("官网固件超过设备最大玩法槽上限");
         }
         File sourceFile = File.createTempFile("official-source-", ".bin", directory);
         MessageDigest sourceDigest = sha256Digest();
@@ -89,8 +91,8 @@ public final class FirmwareRepository {
             int count;
             while ((count = source.read(buffer)) != -1) {
                 sourceSize += count;
-                if (sourceSize > DEVICE_SLOT_SIZE || sourceSize > official.sourceSize) {
-                    throw new IOException("官网下载内容超过目录记录或 4.00 MiB 上限");
+                if (sourceSize > MAX_SOURCE_SIZE || sourceSize > official.sourceSize) {
+                    throw new IOException("官网下载内容超过目录记录或设备槽上限");
                 }
                 sourceDigest.update(buffer, 0, count);
                 target.write(buffer, 0, count);
@@ -169,6 +171,96 @@ public final class FirmwareRepository {
         items.add(0, image);
         save(items);
         if (listener != null) listener.onProgress(100);
+        return image;
+    }
+
+    public synchronized FirmwareImage importLocal(InputStream input, String originalName)
+            throws IOException {
+        File sourceFile = File.createTempFile("local-source-", ".bin", directory);
+        long sourceSize = 0;
+        try (InputStream source = new BufferedInputStream(input);
+             BufferedOutputStream target = new BufferedOutputStream(new FileOutputStream(sourceFile))) {
+            byte[] buffer = new byte[16384];
+            int count;
+            while ((count = source.read(buffer)) != -1) {
+                sourceSize += count;
+                if (sourceSize > MAX_SOURCE_SIZE) {
+                    throw new IOException("固件超过设备最大玩法槽容量");
+                }
+                target.write(buffer, 0, count);
+            }
+        } catch (IOException error) {
+            sourceFile.delete();
+            throw error;
+        }
+
+        long appOffset = 0;
+        ImageMetadata metadata;
+        try {
+            try {
+                metadata = validateImage(sourceFile, 0);
+            } catch (IOException rawError) {
+                appOffset = MERGED_APP_OFFSET;
+                metadata = validateImage(sourceFile, appOffset);
+            }
+        } catch (IOException error) {
+            sourceFile.delete();
+            throw error;
+        }
+        long appSize = sourceSize - appOffset;
+        if (appSize < 176 || appSize > DEVICE_SLOT_SIZE) {
+            sourceFile.delete();
+            throw new IOException("应用镜像大小超过设备最大玩法槽容量");
+        }
+
+        File appFile = File.createTempFile("local-app-", ".bin", directory);
+        try {
+            extract(sourceFile, appOffset, appFile);
+        } catch (IOException error) {
+            appFile.delete();
+            throw error;
+        } finally {
+            sourceFile.delete();
+        }
+        String appSha256;
+        try {
+            appSha256 = digestFile(appFile);
+        } catch (IOException error) {
+            appFile.delete();
+            throw error;
+        }
+        String id = appSha256.substring(0, 16);
+        File destination = new File(directory, id + ".bin");
+        if (destination.exists() && !destination.delete()) {
+            appFile.delete();
+            throw new IOException("无法替换手机中的旧固件文件");
+        }
+        if (!appFile.renameTo(destination)) {
+            try {
+                copy(appFile, destination);
+            } catch (IOException error) {
+                destination.delete();
+                appFile.delete();
+                throw error;
+            }
+            appFile.delete();
+        }
+
+        List<FirmwareImage> items = list();
+        for (FirmwareImage old : new ArrayList<>(items)) {
+            if (old.id.equals(id)) {
+                items.remove(old);
+                if (!old.file.equals(destination)) old.file.delete();
+            }
+        }
+        String safeOriginal = originalName == null || originalName.trim().isEmpty() ?
+                "local-firmware.bin" : originalName;
+        FirmwareImage image = new FirmwareImage(id,
+                displayName("", safeOriginal, metadata.project), safeOriginal,
+                metadata.project, metadata.version, appSize, appSha256,
+                System.currentTimeMillis(), destination, "", "");
+        items.add(0, image);
+        save(items);
         return image;
     }
 

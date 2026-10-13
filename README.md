@@ -1,186 +1,78 @@
-# AI Passport Notification Portal
+# AI Passport Bluetooth Firmware Installer
 
-**English** | [简体中文](README.zh_CN.md) · [Detailed setup](APP_README.en.md) · [中文部署说明](APP_README.md)
+**English** | [简体中文](README.zh_CN.md) | [Detailed setup](APP_README.en.md) | [中文安装说明](APP_README.md)
 
-An ESP32-C3 firmware and Android companion app that turn the FoloToy AI Passport into a private notification display and a small firmware portal.
+A small resident firmware and Android companion app for keeping several compatible AI Passport plays on one device. The phone can import multiple local BIN files or download a verified package from the FoloToy catalog, compare each image with the real device-slot capacity, then install it over secure Bluetooth.
 
-Selected Android notifications—such as WeChat, Feishu/Lark and SMS—are forwarded over an authenticated, encrypted BLE connection. The device keeps recent messages for manual browsing, wakes its screen when a new message arrives, reconnects automatically after the initial pairing, and can install one compatible user application without replacing the resident portal.
+The installer itself remains in a protected factory partition. Three independent play slots are available:
 
-> This is a community derivative built on the [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport) BSP. It is not an official FoloToy release.
+| Slot | Capacity | Intended use |
+|---|---:|---|
+| 1 | 1.4375 MiB | Small play |
+| 2 | 1.4375 MiB | Small play |
+| 3 | 3.875 MiB | Large play |
 
-## Highlights
+Total free capacity and the largest empty slot are shown separately. A firmware image must fit completely inside one slot; free space cannot be combined across slots.
 
-- **Android notification bridge**: forwards only the apps selected by the user.
-- **No cloud relay**: notification text and firmware data travel directly between the phone and the AI Passport over BLE.
-- **Persistent browsing session**: up to 32 recent notifications are retained in device RAM across all apps; messages do not disappear on a timer.
-- **Source filters**: cycle between all messages and individual apps, then clear only the current app when needed.
-- **Automatic reconnect**: the foreground service retries after app launch, phone boot, APK update and Bluetooth being turned back on.
-- **Screen power management**: new notifications wake the display; 60 seconds of inactivity turns off the LCD/backlight while BLE stays active.
-- **Firmware library**: the Android app can import multiple compatible ESP32-C3 application images and install one image into the device's 4 MiB user slot.
-- **Resident factory portal**: the notification portal lives in the factory partition and is not overwritten by normal user-slot installation.
+## Features
 
-## Controls
+- Import several local raw application images or merged images in one selection.
+- Browse supported published firmware from the official FoloToy catalog.
+- Validate the application header, target chip, recorded size and SHA-256 before saving official downloads.
+- Display every device slot, installed image name and size, total free capacity, and maximum single-slot capacity.
+- Install into an empty slot or deliberately replace an occupied slot.
+- Select, clear, and start installed plays on the device.
+- Use authenticated and encrypted Bluetooth pairing; firmware data does not pass through a relay server.
 
-### Notification view
+## Use
 
-| Input | Action |
-|---|---|
-| Up | Previous message in the active source filter |
-| Down | Next message in the active source filter |
-| OK | Cycle through all messages and per-app filters; never deletes a message |
-| Hold Up for 3 seconds | Ask to clear messages for the active app; press OK to confirm |
-| Hold Down for 3 seconds | Toggle notification sound mute |
-| Hold OK for 3 seconds | Run the device self-test |
-| Double-press Down | Turn off the screen immediately |
-| Double-press OK | Open or close the firmware portal |
+1. Install the resident installer once by USB or a compatible web flasher, then install and open the Android APK.
+2. Grant Nearby devices and notification permission, enable Bluetooth, and confirm the same pairing code on the phone and device.
+3. Import one or more BIN files, or download a supported play from the official list. Select a target slot; the APK blocks images that exceed that slot.
+4. On the device, use Up/Down to select a slot and hold OK to start it. Hold Down, then press OK, to clear the selected slot.
 
-### Firmware portal
+No Wi-Fi setup is required.
 
-| Input | Action |
-|---|---|
-| Up / Down | Select the resident notification portal or the installed user app |
-| OK | Return to notifications |
-| Hold OK for 3 seconds | Start the selected user app |
+## Build
 
-A sleeping screen consumes the first button action only to wake. A new notification wakes it automatically.
-
-## System architecture
-
-```text
-Android notification listener
-        │
-        │ selected notifications / firmware chunks
-        ▼
-Android foreground BLE service
-        │  authenticated + encrypted GATT
-        ▼
-AI Passport factory portal
-        ├── notification list and UI
-        ├── sound, buttons and screen sleep
-        └── 4 MiB user application slot
-```
-
-The Android app uses standard Android APIs. Samsung phones, including the S25 Ultra used during development, are treated as ordinary Android devices; no Samsung-specific SDK is required.
-
-## Quick start
-
-### Requirements
-
-- FoloToy AI Passport with ESP32-C3, 8 MiB flash and no PSRAM
-- ESP-IDF 5.5.x; this project was built with ESP-IDF 5.5.3
-- Android Studio/SDK with compile SDK 36
-- JDK 17
-- Android 8.0 (API 26) or newer with BLE
-
-### Build the resident portal
+Firmware requires ESP-IDF 5.5.x:
 
 ```sh
-source ~/esp/esp-idf-v5.5.3/export.sh
-idf.py set-target esp32c3
-idf.py -B build-slot-portal build
+source /path/to/esp-idf-v5.5.3/export.sh
+tools/build_community_release.sh
 ```
 
-Do **not** convert the partitioned output into a gap-padded image and flash it from `0x0`. That can overwrite NVS, BLE keys, `cardid` and the user slot. Use the offset-aware command and backup guidance in [APP_README.en.md](APP_README.en.md).
+The merged installer is written to:
 
-### Install or build the Android app
+```text
+build-installer/AI-Passport-Bluetooth-Installer-merged-0x0.bin
+```
 
-Download the signed universal APK from [GitHub Releases](https://github.com/yhh-l/ai-passport-notification-portal/releases/latest). It contains no ABI-specific native libraries, so the same file is used on ARM and x86 Android devices.
-
-To build and verify a signed release locally, configure the private signing file described in [android-app/RELEASING.md](android-app/RELEASING.md), then run:
+Android requires JDK 17 and Android SDK 36:
 
 ```sh
 cd android-app
-JAVA_HOME=/path/to/jdk17 \
-ANDROID_HOME=/path/to/android-sdk \
-./tools/package_release.sh
+JAVA_HOME=/path/to/jdk17 ANDROID_HOME=/path/to/android-sdk \
+  ./gradlew assembleDebug lintDebug
 ```
 
-Release APK output:
+For a signed release, configure the private signing file described in [android-app/RELEASING.md](android-app/RELEASING.md), then run `android-app/tools/package_release.sh`.
 
-```text
-android-app/dist/AI-Passport-Portal-Android-1.5.0.apk
-```
+## Compatibility boundary
 
-### First connection
+The installer accepts compatible application images, not arbitrary full-flash backups. Official merged packages are normalized by extracting the application at `0x10000`; local files may be either that merged format or a raw application image.
 
-1. Install and open the APK, then tap **Quick setup**.
-2. Follow the guided checks for Nearby devices, Bluetooth, Notification access and notification-app selection. Completed steps are skipped automatically.
-3. Turn on the AI Passport and approve the first secure Bluetooth pairing requested by Android.
-4. Use **Send test message** before relying on real notifications.
-
-Android requires the user to approve runtime permissions, Notification access and the first Bluetooth pairing. No APK can silently bypass these system security confirmations.
-
-After the first secure pairing, the app normally reconnects by itself. Android's **Force stop** disables background receivers until the app is opened again, so it should not be used as an auto-connect test.
-
-## Notification and privacy behavior
-
-- The 32-message limit is **shared by all selected apps**, not 32 per app.
-- Messages live only in AI Passport RAM and are cleared by reboot or explicit per-app deletion.
-- SMS body and one-time-code display is disabled by default. When disabled, SMS content is hidden and standalone 4–8 digit numbers in ordinary notifications are masked.
-- BLE notification payloads are limited to 160 UTF-8 bytes. Images, avatars and attachments are not transferred.
-- Notifications missed while the phone and device are disconnected are not guaranteed to be replayed.
-- Full-flash backups may contain Wi-Fi credentials, BLE bonding keys and device identifiers. `.local-backups/` is intentionally excluded from Git.
-
-## User firmware slot
-
-The phone may store several `.bin` files, but the current partition map exposes **one 4 MiB user application slot** on the device. Installing another app replaces only that slot, not the resident notification portal.
-
-APK 1.5.0 no longer asks users to pick an arbitrary local `.bin`. It loads the published FoloToy official catalog over HTTPS, keeps only official `esp-merged-0x0` packages at or below 4 MiB, and verifies the catalog size plus SHA-256 after download. Because the official package is a merged image starting at `0x0`, the app extracts the application at `0x10000`, validates its ESP32-C3 header/descriptor, and saves the normalized `*-user-slot.bin` in `Download/AI-Passport` before offering BLE installation. Packages above 4 MiB or with unsupported metadata are hidden.
-
-These checks still do not prove board-level compatibility. The resident portal remains available for recovery, and each downloaded play should be tested individually on hardware.
-
-The project was tested with a user-slot build derived from [weibaohui/aipassport-radio](https://github.com/weibaohui/aipassport-radio). Third-party source code and binaries remain subject to their respective upstream licenses and compatibility constraints.
+Rollback is enabled so an unconfirmed third-party play normally returns to the resident installer after its next reboot. A play that confirms itself as the permanent OTA image, rewrites OTA metadata, assumes an incompatible partition map, or cannot boot cleanly may not return automatically and can require USB recovery. Test each third-party image before relying on unattended switching.
 
 ## Repository layout
 
 ```text
-android-app/                 Android notification bridge and firmware manager
-components/bsp/              Reusable display, button, audio, battery and I²C BSP
-main/                        Resident portal, BLE protocol, message store and UI
-tests/                       Lightweight host-side message/UI tests
-tools/macos_ble_test.swift   Desktop BLE test sender
-docs/                        Hardware reference and troubleshooting notes
-partitions.csv               Factory portal plus 4 MiB user-slot layout
-APP_README*.md               Detailed build, flash, recovery and validation notes
+android-app/                 Android firmware library and Bluetooth installer
+components/bsp/              Display and button support
+main/                        Resident installer, BLE protocol and slot manager
+partitions.csv               Factory installer plus three play slots
+tools/build_community_release.sh
+APP_README*.md               Flashing, recovery and verification details
 ```
 
-## Validation snapshot
-
-As of **October 9, 2026**:
-
-- The resident portal `1.2.1-portal` builds successfully with ESP-IDF 5.5.3.
-- Android app `1.5.0` (`versionCode 7`) builds as a signed universal APK for API 26–36 and passes `lintDebug` / `lintRelease` with 0 errors; signing and ZIP alignment were also verified.
-- Automatic encrypted reconnect after toggling phone Bluetooth was observed on a Samsung S25 Ultra.
-- Notification navigation, display sleep/wake, app filtering, per-app clearing and user-firmware transfer were exercised on the physical device; the user reported the tested flow working normally.
-- Host tests for the message store and UI calculations pass. The official catalog parser selected 12 current published packages at or below 4 MiB and excluded two oversized entries during the October 9 snapshot; all 12 source files matched the official size/SHA-256 and contained an ESP32-C3 application at `0x10000`.
-
-Still treat these as separate checks:
-
-- A phone-side “installation complete” result is not a byte-for-byte flash readback.
-- The final Radio slot readback was interrupted before completion.
-- Automatic rollback from every downloaded user app to the factory portal depends on that app's OTA behavior and must be verified on hardware. The exact APK 1.5.0 download-to-BLE flow has not yet been exercised on a connected Android phone.
-
-See [APP_README.en.md](APP_README.en.md) for exact image sizes, hashes, partition offsets and remaining verification boundaries.
-
-## Development
-
-Read [AGENTS.md](AGENTS.md) and [docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md](docs/AI_HARDWARE_DEVELOPMENT_GUIDE.md) before changing hardware-facing code. Keep reusable hardware logic in `components/bsp`, application/UI behavior in `main`, and report clean-build results separately from physical-device results.
-
-Minimum firmware check:
-
-```sh
-source ~/esp/esp-idf-v5.5.3/export.sh
-idf.py -B build-slot-portal build
-```
-
-Android checks:
-
-```sh
-cd android-app
-./gradlew assembleDebug lintDebug
-./tools/package_release.sh
-```
-
-## License and attribution
-
-The repository is released under the [MIT License](LICENSE). It is derived from the FoloToy AI Passport project and includes Noto Sans SC font data under the license in [main/fonts/OFL-NotoSansSC.txt](main/fonts/OFL-NotoSansSC.txt). Third-party firmware is not part of this repository unless explicitly stated and remains governed by its upstream license.
+This community project is derived from the [FoloToy AI Passport](https://gitee.com/FoloToy/ai-passport) BSP and is not an official FoloToy release. Source is released under the [MIT License](LICENSE); imported third-party firmware remains under its own license.
