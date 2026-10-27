@@ -21,8 +21,8 @@ Total free capacity and the largest empty slot are shown separately. A firmware 
 ## Features
 
 - Import several local raw application images or merged images in one selection.
-- Browse supported published firmware from the official FoloToy catalog.
-- Validate the application header, target chip, recorded size and SHA-256 before saving official downloads.
+- Search compatible official and community plays by Chinese or English name, category, and tag.
+- Download catalog firmware while validating its application header, target chip, recorded size, and SHA-256.
 - Display every device slot, installed image name and size, total free capacity, and maximum single-slot capacity.
 - Install into an empty slot or deliberately replace an occupied slot.
 - Select, clear, and start installed plays on the device.
@@ -32,7 +32,7 @@ Total free capacity and the largest empty slot are shown separately. A firmware 
 
 1. Install the resident installer once by USB or a compatible web flasher, then install and open the Android APK.
 2. Grant Nearby devices and notification permission, enable Bluetooth, and confirm the same pairing code on the phone and device.
-3. Import one or more BIN files, or download a supported play from the official list. Select a target slot; the APK blocks images that exceed that slot.
+3. Import one or more BIN files, or search the FoloToy catalog and download a supported play. Select a target slot; the APK blocks images that exceed that slot.
 4. On the device, use Up/Down to select a slot and hold OK to start it. Hold Down, then press OK, to clear the selected slot.
 
 No Wi-Fi setup is required.

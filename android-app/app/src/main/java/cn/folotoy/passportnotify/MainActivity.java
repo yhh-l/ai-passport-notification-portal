@@ -22,10 +22,13 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.provider.Settings;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
@@ -43,6 +46,8 @@ public class MainActivity extends Activity {
     private static final int REQUEST_PERMISSIONS = 101;
     private static final int REQUEST_STORAGE = 102;
     private static final int REQUEST_IMPORT = 103;
+    private static final int DEFAULT_CATALOG_ITEMS = 24;
+    private static final int MAX_SEARCH_RESULTS = 80;
     private static final int COLOR_BACKGROUND = Color.rgb(8, 18, 16);
     private static final int COLOR_CARD = Color.rgb(20, 38, 34);
     private static final int COLOR_CARD_ALT = Color.rgb(29, 52, 47);
@@ -64,10 +69,17 @@ public class MainActivity extends Activity {
     private ProgressBar downloadProgress;
     private Button connectButton;
     private Button refreshButton;
+    private EditText catalogSearch;
     private boolean receiverRegistered;
     private List<OfficialFirmware> officialFirmwares = Collections.emptyList();
     private OfficialFirmware pendingStorageDownload;
     private String downloadingSlug;
+    private int catalogPublishedCount;
+    private int catalogTooLargeCount;
+    private int catalogUnsupportedCount;
+    private long catalogFetchedAt;
+    private int catalogMatchCount;
+    private int catalogShownCount;
 
     private final BroadcastReceiver statusReceiver = new BroadcastReceiver() {
         @Override public void onReceive(Context context, Intent intent) {
@@ -182,13 +194,51 @@ public class MainActivity extends Activity {
         localCard.addView(firmwareList);
         root.addView(localCard);
 
-        root.addView(sectionTitle("FoloToy 官网固件"));
+        root.addView(sectionTitle("FoloToy 玩法库"));
         LinearLayout officialCard = card();
-        officialCard.addView(text("官网下载会校验记录大小和 SHA-256，再提取可安装的应用镜像。",
+        officialCard.addView(text("可搜索官方与社区玩法。下载时会校验大小和 SHA-256，再提取可安装镜像。",
                 14, COLOR_MUTED, false));
-        refreshButton = actionButton("刷新官网列表", view -> refreshOfficialCatalog(true));
+        catalogSearch = new EditText(this);
+        catalogSearch.setSingleLine(true);
+        catalogSearch.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_SEARCH);
+        catalogSearch.setHint("搜索中文名、英文名、分类或标签");
+        catalogSearch.setTextColor(COLOR_TEXT);
+        catalogSearch.setHintTextColor(COLOR_MUTED);
+        catalogSearch.setTextSize(14);
+        catalogSearch.setPadding(dp(12), dp(10), dp(12), dp(10));
+        GradientDrawable searchBackground = rounded(COLOR_CARD_ALT, 7);
+        searchBackground.setStroke(dp(1), Color.rgb(58, 91, 83));
+        catalogSearch.setBackground(searchBackground);
+        catalogSearch.setCompoundDrawablesWithIntrinsicBounds(
+                android.R.drawable.ic_menu_search, 0, 0, 0);
+        catalogSearch.setCompoundDrawableTintList(
+                android.content.res.ColorStateList.valueOf(COLOR_MUTED));
+        catalogSearch.setCompoundDrawablePadding(dp(8));
+        catalogSearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence value, int start, int count,
+                                                    int after) { }
+            @Override public void onTextChanged(CharSequence value, int start, int before,
+                                                int count) { }
+            @Override public void afterTextChanged(Editable value) {
+                refreshOfficialList();
+                if (downloadingSlug == null) updateOfficialStatus(false);
+            }
+        });
+        LinearLayout searchRow = horizontal();
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        searchParams.topMargin = dp(12);
+        searchRow.addView(catalogSearch, searchParams);
+        Button clearSearch = compactButton("清除", view -> catalogSearch.setText(""));
+        LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clearParams.leftMargin = dp(8);
+        clearParams.topMargin = dp(12);
+        searchRow.addView(clearSearch, clearParams);
+        officialCard.addView(searchRow);
+        refreshButton = actionButton("刷新玩法目录", view -> refreshOfficialCatalog(true));
         LinearLayout.LayoutParams refreshParams = matchWrap();
-        refreshParams.topMargin = dp(12);
+        refreshParams.topMargin = dp(10);
         officialCard.addView(refreshButton, refreshParams);
         officialStatus = text("正在读取缓存…", 13, COLOR_MUTED, false);
         officialStatus.setPadding(0, dp(10), 0, 0);
@@ -533,7 +583,7 @@ public class MainActivity extends Activity {
     private void refreshOfficialCatalog(boolean userInitiated) {
         if (downloadingSlug != null) return;
         refreshButton.setEnabled(false);
-        officialStatus.setText("正在从 FoloToy 官网同步固件目录…");
+        officialStatus.setText("正在从 FoloToy 官网同步玩法目录…");
         new Thread(() -> {
             try {
                 OfficialFirmwareService.CatalogResult result = officialFirmwareService.refreshCatalog();
@@ -542,7 +592,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     refreshButton.setEnabled(true);
                     officialStatus.setText("刷新失败：" + safeMessage(error));
-                    if (userInitiated) toast("无法刷新官网列表");
+                    if (userInitiated) toast("无法刷新玩法目录");
                 });
             }
         }, "official-catalog").start();
@@ -550,26 +600,42 @@ public class MainActivity extends Activity {
 
     private void applyOfficialCatalog(OfficialFirmwareService.CatalogResult result, boolean refreshed) {
         officialFirmwares = result.items;
+        catalogPublishedCount = result.publishedCount;
+        catalogTooLargeCount = result.tooLargeCount;
+        catalogUnsupportedCount = result.unsupportedCount;
+        catalogFetchedAt = result.fetchedAt;
         refreshButton.setEnabled(true);
-        officialStatus.setText(result.items.isEmpty() ? "官网当前没有可安装固件。" :
-                "可用 " + result.items.size() + " 个；已按最大槽容量筛选" +
-                        (refreshed ? "，刚刚更新。" : "。"));
         refreshOfficialList();
+        updateOfficialStatus(refreshed);
         if (result.items.isEmpty() && result.fetchedAt == 0) refreshOfficialCatalog(false);
     }
 
     private void refreshOfficialList() {
         officialList.removeAllViews();
+        catalogMatchCount = 0;
+        catalogShownCount = 0;
         if (officialFirmwares.isEmpty()) {
-            officialList.addView(text("点击刷新后显示官网固件。", 13, COLOR_MUTED, false));
+            officialList.addView(text("点击刷新后显示可下载玩法。", 13, COLOR_MUTED, false));
             return;
         }
+        String query = catalogSearch == null ? "" : catalogSearch.getText().toString().trim();
+        int limit = query.isEmpty() ? DEFAULT_CATALOG_ITEMS : MAX_SEARCH_RESULTS;
         for (OfficialFirmware firmware : officialFirmwares) {
+            if (!firmware.matches(query)) continue;
+            catalogMatchCount++;
+            if (catalogShownCount >= limit) continue;
+            catalogShownCount++;
             LinearLayout row = vertical();
             row.setPadding(0, dp(9), 0, dp(9));
             row.addView(text(firmware.displayName(), 15, COLOR_TEXT, true));
-            row.addView(text(formatSize(firmware.sourceSize) + " · SHA-256 " +
-                    firmware.sourceSha256.substring(0, 12) + "…", 12, COLOR_MUTED, false));
+            String version = firmware.shareVersion.isEmpty() ? "" :
+                    " · 版本 " + firmware.shareVersion;
+            String category = firmware.categoryLabel().isEmpty() ? "" :
+                    " · " + firmware.categoryLabel();
+            row.addView(text(firmware.sourceLabel() + category + version + " · " +
+                    formatSize(firmware.sourceSize) + " · SHA-256 " +
+                    firmware.sourceSha256.substring(0, 12) + "…",
+                    12, COLOR_MUTED, false));
             FirmwareImage local = firmwareRepository.findOfficial(firmware);
             Button action;
             if (firmware.slug.equals(downloadingSlug)) {
@@ -584,6 +650,35 @@ public class MainActivity extends Activity {
             actionParams.topMargin = dp(6);
             row.addView(action, actionParams);
             officialList.addView(row);
+        }
+        if (catalogMatchCount == 0) {
+            officialList.addView(text("没有找到匹配玩法，请换一个关键词。",
+                    13, COLOR_MUTED, false));
+        } else if (catalogMatchCount > catalogShownCount) {
+            officialList.addView(text("还有 " + (catalogMatchCount - catalogShownCount) +
+                    " 个匹配结果未显示，请输入更具体的关键词。",
+                    12, COLOR_WARNING, false));
+        }
+    }
+
+    private void updateOfficialStatus(boolean refreshed) {
+        if (officialFirmwares.isEmpty()) {
+            officialStatus.setText(catalogFetchedAt == 0 ? "尚未同步玩法目录。" :
+                    "官网当前没有兼容玩法。");
+            return;
+        }
+        String query = catalogSearch == null ? "" : catalogSearch.getText().toString().trim();
+        if (query.isEmpty()) {
+            officialStatus.setText("目录收录 " + catalogPublishedCount + " 个已发布玩法，可下载 " +
+                    officialFirmwares.size() + " 个；当前显示最近 " + catalogShownCount + " 个" +
+                    (refreshed ? "，刚刚更新。" : "。") +
+                    (catalogTooLargeCount > 0 ? "另有 " + catalogTooLargeCount +
+                            " 个超过最大槽容量。" : "") +
+                    (catalogUnsupportedCount > 0 ? "另有 " + catalogUnsupportedCount +
+                            " 个暂无兼容下载。" : ""));
+        } else {
+            officialStatus.setText("找到 " + catalogMatchCount + " 个匹配玩法，当前显示 " +
+                    catalogShownCount + " 个；共 " + officialFirmwares.size() + " 个可搜索。");
         }
     }
 

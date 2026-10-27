@@ -36,7 +36,7 @@ The small slots are 1.4375 MiB each and the large slot is 3.875 MiB. `cardid` re
 3. Power on the device. The APK scans for `PassportNotify`; on the first connection, compare and approve the six-digit code shown by the phone and device.
 4. After connection, the APK reads all three slots, total free capacity and the largest empty slot.
 
-The file picker accepts several BIN files at once. A local file may be a raw application image or a merged image whose application begins at `0x10000`. Official downloads are checked against catalog size, SHA-256 and the embedded application descriptor.
+The file picker accepts several BIN files at once. A local file may be a raw application image or a merged image whose application begins at `0x10000`. The play catalog searches compatible official and community releases by Chinese or English name, category, and tag. Downloads are checked against catalog size, SHA-256, and the embedded application descriptor.
 
 ## Slots and controls
 

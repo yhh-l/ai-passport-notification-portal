@@ -31,12 +31,11 @@ import org.json.JSONObject;
 public final class OfficialFirmwareService {
     private static final String OFFICIAL_ORIGIN = "https://ai-passport.folotoy.cn";
     private static final String CATALOG_PATH = "/api/plays";
-    private static final String DOWNLOAD_PREFIX = "/api/download/official/";
     private static final String PREFS = "official_firmware_catalog";
-    private static final String KEY_CACHE = "cache";
+    private static final String KEY_CACHE = "cache_v2";
     private static final int CONNECT_TIMEOUT_MS = 15000;
     private static final int READ_TIMEOUT_MS = 60000;
-    private static final int MAX_CATALOG_BYTES = 8 * 1024 * 1024;
+    private static final int MAX_CATALOG_BYTES = 16 * 1024 * 1024;
     private static final Pattern SLUG = Pattern.compile("[a-z0-9][a-z0-9-]{0,80}");
     private static final Pattern SHA256 = Pattern.compile("[0-9a-fA-F]{64}");
 
@@ -115,48 +114,60 @@ public final class OfficialFirmwareService {
         JSONArray plays = root.optJSONArray("plays");
         if (plays == null) throw new IOException("官网未返回玩法列表");
         List<OfficialFirmware> items = new ArrayList<>();
-        int officialCount = 0;
+        int publishedCount = 0;
         int tooLargeCount = 0;
         int unsupportedCount = 0;
         for (int index = 0; index < plays.length(); index++) {
             JSONObject play = plays.optJSONObject(index);
-            if (play == null || !"official".equals(play.optString("source")) ||
-                    !play.optBoolean("isOfficial", false) ||
-                    !"published".equals(play.optString("status"))) continue;
-            officialCount++;
+            if (play == null) continue;
+            String source = play.optString("source");
+            if (!CatalogRules.isPublishedSource(source, play.optString("status"))) continue;
+            publishedCount++;
             JSONObject firmware = play.optJSONObject("firmware");
-            long size = firmware == null ? play.optLong("firmwareSize") :
-                    firmware.optLong("size", play.optLong("firmwareSize"));
+            if (firmware == null || !firmware.optBoolean("available", true)) {
+                unsupportedCount++;
+                continue;
+            }
+            long size = firmware.optLong("size", play.optLong("firmwareSize"));
             if (size > FirmwareRepository.MAX_SOURCE_SIZE) {
                 tooLargeCount++;
                 continue;
             }
             String slug = play.optString("slug");
-            String sha = firmware == null ? play.optString("firmwareSha256") :
-                    firmware.optString("sha256", play.optString("firmwareSha256"));
-            String path = firmware == null ? play.optString("downloadUrl") :
-                    firmware.optString("url", play.optString("downloadUrl"));
-            String format = firmware == null ? "" : firmware.optString("format");
+            String sha = firmware.optString("sha256", play.optString("firmwareSha256"));
+            String path = firmware.optString("url", play.optString("downloadUrl"));
+            String format = firmware.optString("format");
             JSONObject title = play.optJSONObject("title");
             if (size <= 0 || !SLUG.matcher(slug).matches() || !SHA256.matcher(sha).matches() ||
-                    !path.equals(DOWNLOAD_PREFIX + slug) || !"esp-merged-0x0".equals(format) ||
+                    !CatalogRules.hasExpectedDownloadPath(source, slug, path) ||
+                    !"esp-merged-0x0".equals(format) ||
                     title == null) {
                 unsupportedCount++;
                 continue;
             }
+            JSONArray tags = play.optJSONArray("tags");
+            StringBuilder keywords = new StringBuilder();
+            if (tags != null) {
+                for (int tagIndex = 0; tagIndex < tags.length(); tagIndex++) {
+                    if (tagIndex > 0) keywords.append(' ');
+                    keywords.append(tags.optString(tagIndex));
+                }
+            }
             items.add(new OfficialFirmware(slug, title.optString("zh"), title.optString("en"),
+                    source, play.optString("category"), keywords.toString(),
                     play.optString("shareVersion"), size, sha.toLowerCase(Locale.ROOT), path,
                     format, play.optString("publishedAt")));
         }
         items.sort(Comparator.comparing((OfficialFirmware item) -> item.publishedAt,
                 Comparator.nullsLast(Comparator.reverseOrder())));
-        return new CatalogResult(items, officialCount, tooLargeCount, unsupportedCount,
+        return new CatalogResult(items, publishedCount, tooLargeCount, unsupportedCount,
                 System.currentTimeMillis());
     }
 
     private void validateOfficialPath(OfficialFirmware firmware) throws IOException {
         if (!SLUG.matcher(firmware.slug).matches() ||
-                !firmware.downloadPath.equals(DOWNLOAD_PREFIX + firmware.slug) ||
+                !CatalogRules.hasExpectedDownloadPath(firmware.source, firmware.slug,
+                        firmware.downloadPath) ||
                 !SHA256.matcher(firmware.sourceSha256).matches() ||
                 firmware.sourceSize <= 0 || firmware.sourceSize > FirmwareRepository.MAX_SOURCE_SIZE ||
                 !"esp-merged-0x0".equals(firmware.format)) {
@@ -175,7 +186,7 @@ public final class OfficialFirmwareService {
         connection.setRequestMethod("GET");
         connection.setRequestProperty("Accept", "application/json, application/octet-stream");
         connection.setRequestProperty("Accept-Encoding", "identity");
-        connection.setRequestProperty("User-Agent", "AI-Passport-Installer-Android/2.0");
+        connection.setRequestProperty("User-Agent", "AI-Passport-Installer-Android/2.1");
         return connection;
     }
 
@@ -252,15 +263,15 @@ public final class OfficialFirmwareService {
 
     public static final class CatalogResult {
         public final List<OfficialFirmware> items;
-        public final int officialCount;
+        public final int publishedCount;
         public final int tooLargeCount;
         public final int unsupportedCount;
         public final long fetchedAt;
 
-        CatalogResult(List<OfficialFirmware> items, int officialCount, int tooLargeCount,
+        CatalogResult(List<OfficialFirmware> items, int publishedCount, int tooLargeCount,
                       int unsupportedCount, long fetchedAt) {
             this.items = Collections.unmodifiableList(new ArrayList<>(items));
-            this.officialCount = officialCount;
+            this.publishedCount = publishedCount;
             this.tooLargeCount = tooLargeCount;
             this.unsupportedCount = unsupportedCount;
             this.fetchedAt = fetchedAt;
@@ -275,7 +286,7 @@ public final class OfficialFirmwareService {
             JSONArray array = new JSONArray();
             for (OfficialFirmware item : items) array.put(item.toJson());
             json.put("items", array);
-            json.put("officialCount", officialCount);
+            json.put("publishedCount", publishedCount);
             json.put("tooLargeCount", tooLargeCount);
             json.put("unsupportedCount", unsupportedCount);
             json.put("fetchedAt", fetchedAt);
@@ -288,7 +299,8 @@ public final class OfficialFirmwareService {
             for (int index = 0; index < array.length(); index++) {
                 items.add(OfficialFirmware.fromJson(array.getJSONObject(index)));
             }
-            return new CatalogResult(items, json.optInt("officialCount", items.size()),
+            return new CatalogResult(items,
+                    json.optInt("publishedCount", json.optInt("officialCount", items.size())),
                     json.optInt("tooLargeCount"), json.optInt("unsupportedCount"),
                     json.optLong("fetchedAt"));
         }
