@@ -4,7 +4,7 @@
 
 ## Download
 
-[Download the Android APK](https://github.com/yhh-l/ai-passport-notification-portal/releases/download/bluetooth-installer-v2.0.0/AI-Passport-Bluetooth-Installer-2.0.0-debug.apk) or open the [2.0.0 release page](https://github.com/yhh-l/ai-passport-notification-portal/releases/tag/bluetooth-installer-v2.0.0) for the APK, community firmware ZIP, merged BIN, and SHA-256 checksums. The current APK is an installable debug-signed build.
+[Download the Android APK](https://github.com/yhh-l/ai-passport-notification-portal/releases/download/bluetooth-installer-v2.1.0/AI-Passport-Bluetooth-Installer-2.1.0-debug.apk) or open the [2.1.0 release page](https://github.com/yhh-l/ai-passport-notification-portal/releases/tag/bluetooth-installer-v2.1.0) for the APK, merged BIN, and SHA-256 checksums. The current APK is an installable debug-signed build.
 
 A small resident firmware and Android companion app for keeping several compatible AI Passport plays on one device. The phone can import multiple local BIN files or download a verified package from the FoloToy catalog, compare each image with the real device-slot capacity, then install it over secure Bluetooth.
 

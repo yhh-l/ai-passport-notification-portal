@@ -4,7 +4,7 @@
 
 ## 下载
 
-[直接下载 Android APK](https://github.com/yhh-l/ai-passport-notification-portal/releases/download/bluetooth-installer-v2.0.0/AI-Passport-Bluetooth-Installer-2.0.0-debug.apk)，或打开 [2.0.0 发布页](https://github.com/yhh-l/ai-passport-notification-portal/releases/tag/bluetooth-installer-v2.0.0) 获取 APK、社区固件 ZIP、合并 BIN 和 SHA-256 校验值。当前 APK 是可安装的 Debug 签名版本。
+[直接下载 Android APK](https://github.com/yhh-l/ai-passport-notification-portal/releases/download/bluetooth-installer-v2.1.0/AI-Passport-Bluetooth-Installer-2.1.0-debug.apk)，或打开 [2.1.0 发布页](https://github.com/yhh-l/ai-passport-notification-portal/releases/tag/bluetooth-installer-v2.1.0) 获取 APK、合并 BIN 和 SHA-256 校验值。当前 APK 是可安装的 Debug 签名版本。
 
 这是一套精简的常驻安装器固件和 Android 配套 APK，用来在同一台 AI Passport 中保留多个兼容玩法。手机可一次导入多个本地 BIN，也可从 FoloToy 官网目录下载并校验固件，然后比较固件大小与真实槽位容量，通过安全蓝牙写入。
 
