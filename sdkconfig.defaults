@@ -7,7 +7,7 @@ CONFIG_IDF_TARGET="esp32c3"
 CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
 # 烧录时按实际探测容量回写镜像头。
 CONFIG_ESPTOOLPY_HEADER_FLASHSIZE_UPDATE=y
-# 常驻安装器位于前部 factory 分区，提供两个 1.4375 MiB 槽和一个 3.875 MiB 槽。
+# Resident installer plus two dynamically allocated play regions.
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_PARTITION_TABLE_FILENAME="partitions.csv"

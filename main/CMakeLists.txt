@@ -4,5 +4,5 @@ idf_component_register(
          "app_firmware.c"
          "fonts/font_chinese_16.c"
     INCLUDE_DIRS "."
-    REQUIRES app_update bsp bt nvs_flash
+    REQUIRES app_update bsp bt nvs_flash play_store bootloader_support
 )

@@ -172,7 +172,7 @@ public class MainActivity extends Activity {
         deviceSlotList = vertical();
         deviceSlotList.setPadding(0, dp(8), 0, 0);
         slotsCard.addView(deviceSlotList);
-        TextView slotHint = text("设备上按上/下切换槽位，长按 OK 启动；长按下后按 OK 清空。",
+        TextView slotHint = text("设备上按上/下选择玩法，长按 OK 启动；长按下后按 OK 删除。新版安装器普通重启后返回列表。",
                 12, COLOR_WARNING, false);
         slotHint.setPadding(0, dp(10), 0, 0);
         slotsCard.addView(slotHint);
@@ -180,7 +180,7 @@ public class MainActivity extends Activity {
 
         root.addView(sectionTitle("手机固件库"));
         LinearLayout localCard = card();
-        localCard.addView(text("可一次选择多个本地 BIN。安装前会比较固件大小和每个设备槽的容量。",
+        localCard.addView(text("可一次选择多个本地 BIN。连接新版安装器后，按固件大小自动分配空间。",
                 14, COLOR_MUTED, false));
         LinearLayout localActions = horizontal();
         localActions.setPadding(0, dp(12), 0, 0);
@@ -355,9 +355,9 @@ public class MainActivity extends Activity {
             capacityStatus.setText("请连接多固件安装器后读取设备空间。最大支持的本地镜像为 " +
                     formatSize(FirmwareRepository.DEVICE_SLOT_SIZE) + "。");
         } else {
-            capacityStatus.setText("空槽总容量 " + formatSize(BridgeService.totalFree()) +
-                    " · 最大空槽 " + formatSize(BridgeService.largestFreeSlot()) +
-                    "。固件必须完整放入一个槽，不能跨槽。 ");
+            capacityStatus.setText((BridgeService.isDynamicStorage() ? "可用空间 " : "空槽总容量 ") + formatSize(BridgeService.totalFree()) +
+                    " · 最大连续空间 " + formatSize(BridgeService.largestFreeSlot()) +
+                    "。每个固件需要连续空间。 ");
         }
         refreshDeviceSlots(slots, active);
         refreshFirmwareButtons();
@@ -370,10 +370,11 @@ public class MainActivity extends Activity {
             return;
         }
         for (BridgeService.DeviceSlot slot : slots) {
+            if (BridgeService.isDynamicStorage() && !slot.present) continue;
             LinearLayout row = vertical();
             row.setPadding(0, dp(8), 0, dp(8));
             String selected = slot.index == BridgeService.selectedSlot() ? " · 当前选择" : "";
-            row.addView(text("槽 " + (slot.index + 1) + selected, 15, COLOR_TEXT, true));
+            row.addView(text((BridgeService.isDynamicStorage() ? "玩法 " : "槽 ") + (slot.index + 1) + selected, 15, COLOR_TEXT, true));
             String content = slot.present ? slot.name + " · " + formatSize(slot.size) : "空槽";
             row.addView(text(content + " / 容量 " + formatSize(slot.capacity),
                     13, slot.present ? COLOR_MUTED : COLOR_PRIMARY, false));
@@ -483,7 +484,7 @@ public class MainActivity extends Activity {
                 12, COLOR_MUTED, false));
         LinearLayout actions = horizontal();
         actions.setPadding(0, dp(6), 0, 0);
-        Button install = compactButton("选择槽位安装", view -> chooseInstallSlot(image));
+        Button install = compactButton(BridgeService.isDynamicStorage() ? "自动分配并安装" : "选择槽位安装", view -> chooseInstallSlot(image));
         install.setTag("install-button");
         actions.addView(install, weightedButton(false));
         actions.addView(compactButton("移除", view -> confirmDelete(image)), weightedButton(true));
@@ -494,6 +495,20 @@ public class MainActivity extends Activity {
     private void chooseInstallSlot(FirmwareImage image) {
         if (!BridgeService.isConnected() || !BridgeService.isFirmwareSupported()) {
             toast("请先连接多固件安装器");
+            return;
+        }
+        if (BridgeService.isDynamicStorage()) {
+            for (BridgeService.DeviceSlot slot : BridgeService.slots()) {
+                if (slot.available && !slot.present && image.size <= slot.capacity) {
+                    beginInstall(image, slot);
+                    return;
+                }
+            }
+            new AlertDialog.Builder(this).setTitle("没有足够的连续空间")
+                    .setMessage("需要 " + formatSize(image.size) + "，当前最大连续空间 " +
+                            formatSize(BridgeService.largestFreeSlot()) +
+                            "。请先删除不需要的玩法，再重试；不会自动覆盖已有玩法。")
+                    .setPositiveButton("知道了", null).show();
             return;
         }
         List<BridgeService.DeviceSlot> candidates = new ArrayList<>();
@@ -642,7 +657,7 @@ public class MainActivity extends Activity {
                 action = compactButton("下载中", view -> { });
                 action.setEnabled(false);
             } else if (local != null) {
-                action = compactButton("选择槽位安装", view -> chooseInstallSlot(local));
+                action = compactButton(BridgeService.isDynamicStorage() ? "自动分配并安装" : "选择槽位安装", view -> chooseInstallSlot(local));
             } else {
                 action = compactButton("下载并校验", view -> requestOfficialDownload(firmware));
             }

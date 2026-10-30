@@ -14,7 +14,8 @@
 #include "services/gatt/ble_svc_gatt.h"
 #include <string.h>
 
-#define FIRMWARE_PROTOCOL_VERSION 2
+#define FIRMWARE_PROTOCOL_VERSION 3
+static uint8_t s_status_cursor;
 #define FIRMWARE_COMMAND_PREFIX 0xf0
 #define FIRMWARE_COMMAND_START 0x01
 #define FIRMWARE_COMMAND_FINISH 0x02
@@ -78,8 +79,14 @@ static int firmware_control_access(uint16_t conn_handle, uint16_t attr_handle,
         return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
     }
 
+    if (packet[1] != 0x07) s_status_cursor = 0;
     esp_err_t error = ESP_ERR_INVALID_ARG;
     switch (packet[1]) {
+    case 0x07:
+        if (size != 3 || packet[2] >= APP_FIRMWARE_MAX_SLOTS) return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        s_status_cursor = packet[2];
+        error = ESP_OK;
+        break;
     case FIRMWARE_COMMAND_START: {
         uint8_t slot = APP_FIRMWARE_AUTO_SLOT;
         uint32_t image_size;
@@ -160,7 +167,7 @@ static int firmware_status_access(uint16_t conn_handle, uint16_t attr_handle,
     response[offset++] = app_firmware_progress();
     response[offset++] = app_firmware_selected_slot();
     response[offset++] = app_firmware_active_slot();
-    response[offset++] = (uint8_t)app_firmware_slot_count();
+    response[offset++] = 0; // number of records in this page
     write_u32_le(response + offset, (uint32_t)app_firmware_last_error());
     offset += 4;
     write_u32_le(response + offset, (uint32_t)app_firmware_total_free());
@@ -168,10 +175,21 @@ static int firmware_status_access(uint16_t conn_handle, uint16_t attr_handle,
     write_u32_le(response + offset, (uint32_t)app_firmware_largest_free_slot());
     offset += 4;
 
-    for (uint8_t slot = 0; slot < app_firmware_slot_count(); ++slot) {
+    response[offset++] = 0xff; // next cursor, or end of snapshot
+    response[offset++] = s_status_cursor;
+    uint8_t first_empty = 0xff;
+    for (uint8_t i = 0; i < app_firmware_slot_count(); ++i) {
+        app_firmware_slot_info_t info;
+        app_firmware_slot_info(i, &info);
+        if (!info.present) { first_empty = i; break; }
+    }
+    for (uint8_t slot = s_status_cursor; slot < app_firmware_slot_count(); ++slot) {
         app_firmware_slot_info_t info;
         app_firmware_slot_info(slot, &info);
+        if (!info.present && slot != first_empty) continue;
+        if (response[5] == 2) { response[18] = slot; break; }
         size_t name_length = info.present ? strnlen(info.name, APP_FIRMWARE_NAME_MAX) : 0;
+        response[5]++;
         response[offset++] = slot;
         response[offset++] = (info.available ? 0x01 : 0) | (info.present ? 0x02 : 0);
         write_u32_le(response + offset, (uint32_t)info.capacity);
@@ -228,12 +246,14 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     (void)arg;
     switch (event->type) {
     case BLE_GAP_EVENT_CONNECT:
+        s_status_cursor = 0;
         s_connected = event->connect.status == 0;
         if (!s_connected) s_authenticated = false;
         if (!s_connected) s_passkey = UINT32_MAX;
         if (!s_connected && !ble_gap_adv_active()) advertise();
         break;
     case BLE_GAP_EVENT_DISCONNECT:
+        s_status_cursor = 0;
         s_connected = false;
         s_authenticated = false;
         s_passkey = UINT32_MAX;
@@ -266,6 +286,8 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
 static void on_reset(int reason)
 {
+    s_status_cursor = 0;
+    app_firmware_cancel(ESP_ERR_INVALID_STATE);
     s_connected = false;
     s_authenticated = false;
     ESP_LOGW(TAG, "host reset %d", reason);

@@ -2,8 +2,9 @@
 set -eu
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-build_dir="$project_dir/build-installer"
-output="$build_dir/AI-Passport-Bluetooth-Installer-merged-0x0.bin"
+build_dir="${BUILD_DIR:-$project_dir/build-dynamic}"
+case "$build_dir" in /*) ;; *) build_dir="$project_dir/$build_dir" ;; esac
+output="$build_dir/AI-Passport-Dynamic-Library-3.0.0-merged-0x0.bin"
 
 : "${IDF_PATH:?Source the ESP-IDF export.sh script before running this command}"
 

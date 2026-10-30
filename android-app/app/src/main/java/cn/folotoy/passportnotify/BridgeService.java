@@ -69,6 +69,13 @@ public class BridgeService extends Service {
     private static final int OP_FIRMWARE_CLEAR = 5;
     private static final int OP_STATUS_READ = 6;
     private static final int OP_FIRMWARE_SELECT = 7;
+    private static final int OP_STATUS_PAGE = 8;
+    private static volatile boolean currentDynamic;
+    private static volatile boolean currentCatalogRefreshing;
+    private final DynamicStatusPages statusPages = new DynamicStatusPages();
+    private int nextStatusPage;
+    private boolean pageReadArmed;
+    public static boolean isDynamicStorage() { return currentDynamic; }
     private static final int PHASE_PREPARE = 0;
     private static final int PHASE_START = 1;
     private static final int PHASE_DATA = 2;
@@ -123,7 +130,7 @@ public class BridgeService extends Service {
 
     public static boolean publish(int type, String text) {
         BridgeService service = instance;
-        if (service == null || !currentConnected || currentTransferActive) return false;
+        if (service == null || !currentConnected || currentTransferActive || currentCatalogRefreshing) return false;
         service.handler.post(() -> service.enqueue(type, text));
         return true;
     }
@@ -138,7 +145,7 @@ public class BridgeService extends Service {
 
     public static boolean clearDeviceFirmware(int slot) {
         BridgeService service = instance;
-        if (service == null || !currentConnected || !currentFirmwareSupported || currentTransferActive) {
+        if (service == null || !currentConnected || !currentFirmwareSupported || currentTransferActive || currentCatalogRefreshing) {
             return false;
         }
         service.handler.post(() -> {
@@ -150,7 +157,7 @@ public class BridgeService extends Service {
 
     public static boolean selectDeviceFirmware(int slot) {
         BridgeService service = instance;
-        if (service == null || !currentConnected || !currentFirmwareSupported || currentTransferActive) {
+        if (service == null || !currentConnected || !currentFirmwareSupported || currentTransferActive || currentCatalogRefreshing) {
             return false;
         }
         service.handler.post(() -> {
@@ -163,7 +170,7 @@ public class BridgeService extends Service {
     public static String statusText() { return currentStatus; }
     public static boolean isConnected() { return currentConnected; }
     public static boolean isFirmwareSupported() { return currentFirmwareSupported; }
-    public static boolean isTransferActive() { return currentTransferActive; }
+    public static boolean isTransferActive() { return currentTransferActive || currentCatalogRefreshing; }
     public static int transferProgress() { return currentProgress; }
     public static boolean isSlotPresent() { return currentSlotPresent; }
     public static String slotName() { return currentSlotName; }
@@ -561,6 +568,11 @@ public class BridgeService extends Service {
         currentConnected = false;
         currentFirmwareSupported = false;
         currentSlots = new DeviceSlot[0];
+        currentDynamic = false;
+        currentCatalogRefreshing = false;
+        nextStatusPage = 0;
+        pageReadArmed = false;
+        statusPages.reset();
         currentSelectedSlot = -1;
         currentTotalFree = 0;
         currentLargestFreeSlot = 0;
@@ -615,7 +627,7 @@ public class BridgeService extends Service {
     }
 
     private void beginFirmwareInstall(File file, String displayName, int slot) {
-        if (firmwareActive || !currentFirmwareSupported || gatt == null) return;
+        if (firmwareActive || currentCatalogRefreshing || !currentFirmwareSupported || gatt == null) return;
         long size = file.length();
         DeviceSlot target = null;
         for (DeviceSlot candidate : currentSlots) {
@@ -740,7 +752,12 @@ public class BridgeService extends Service {
         }
 
         if (statusReadPending && firmwareStatusCharacteristic != null) {
+            if (currentDynamic && !pageReadArmed) {
+                issueWrite(firmwareControlCharacteristic, new byte[]{(byte)0xf0, 0x07, (byte)nextStatusPage}, OP_STATUS_PAGE);
+                return;
+            }
             statusReadPending = false;
+            pageReadArmed = false;
             issueStatusRead();
         }
     }
@@ -777,7 +794,7 @@ public class BridgeService extends Service {
             gattBusy = false;
             pendingOperation = OP_NONE;
             if (firmwareActive || operation == OP_FIRMWARE_CLEAR ||
-                    operation == OP_FIRMWARE_SELECT) {
+                    operation == OP_FIRMWARE_SELECT || operation == OP_STATUS_PAGE) {
                 failFirmware("固件操作启动失败");
             } else {
                 setStatus("消息发送失败，请检查配对状态");
@@ -811,7 +828,7 @@ public class BridgeService extends Service {
         pendingLength = 0;
         if (status != BluetoothGatt.GATT_SUCCESS) {
             if (firmwareActive || operation == OP_FIRMWARE_CLEAR ||
-                    operation == OP_FIRMWARE_SELECT) {
+                    operation == OP_FIRMWARE_SELECT || operation == OP_STATUS_PAGE) {
                 failFirmware("固件写入失败（" + status + "）");
             } else {
                 currentPacket = null;
@@ -822,7 +839,10 @@ public class BridgeService extends Service {
             return;
         }
 
-        if (operation == OP_NOTIFICATION) {
+        if (operation == OP_STATUS_PAGE) {
+            pageReadArmed = true;
+            statusReadPending = true;
+        } else if (operation == OP_NOTIFICATION) {
             packetOffset += length;
             if (packetOffset >= currentPacket.length) {
                 currentPacket = null;
@@ -878,6 +898,28 @@ public class BridgeService extends Service {
             return;
         }
 
+        if (value[0] == 3) {
+            currentDynamic = true;
+            currentCatalogRefreshing = true;
+            try {
+                byte[] completed = statusPages.accept(value);
+                nextStatusPage = statusPages.nextCursor();
+                if (completed == null) {
+                    statusReadPending = true;
+                    emitStatus();
+                    pump();
+                    return;
+                }
+                currentCatalogRefreshing = false;
+                value = completed;
+                nextStatusPage = 0;
+            } catch (IllegalArgumentException error) {
+                statusPages.reset();
+                nextStatusPage = 0;
+                failFirmware("设备玩法列表无效，请重新连接");
+                return;
+            }
+        }
         int state = value[1] & 0xff;
         int progress = value[2] & 0xff;
         if (value[0] == 2) {
@@ -972,6 +1014,10 @@ public class BridgeService extends Service {
     }
 
     private void failFirmware(String reason) {
+        currentCatalogRefreshing = false;
+        pageReadArmed = false;
+        nextStatusPage = 0;
+        statusPages.reset();
         boolean transferHadStarted = firmwareActive;
         closeFirmwareStream();
         releaseFirmwareWakeLock();
@@ -1028,6 +1074,11 @@ public class BridgeService extends Service {
         currentConnected = false;
         currentFirmwareSupported = false;
         currentSlots = new DeviceSlot[0];
+        currentDynamic = false;
+        currentCatalogRefreshing = false;
+        nextStatusPage = 0;
+        pageReadArmed = false;
+        statusPages.reset();
         currentSelectedSlot = -1;
         currentTotalFree = 0;
         currentLargestFreeSlot = 0;

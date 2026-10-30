@@ -54,9 +54,9 @@ static void build_ui(void)
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_set_scrollable(screen, false);
 
-    create_label(screen, "蓝牙玩法安装器", 12, 12, 216, 28,
+    create_label(screen, "Play Library", 12, 12, 216, 28,
                  0xE8FFF8, LV_TEXT_ALIGN_CENTER);
-    s_status_label = create_label(screen, "正在启动", 12, 48, 216, 28,
+    s_status_label = create_label(screen, "Starting", 12, 48, 216, 28,
                                   0x48D5B5, LV_TEXT_ALIGN_CENTER);
     s_detail_label = create_label(screen, "", 12, 80, 216, 50,
                                   0xA7C2BA, LV_TEXT_ALIGN_CENTER);
@@ -70,7 +70,7 @@ static void build_ui(void)
 
     s_slots_label = create_label(screen, "", 14, 158, 212, 104,
                                  0xE8FFF8, LV_TEXT_ALIGN_LEFT);
-    create_label(screen, "上/下选择  长按OK启动  长按下清空", 8, 286, 224, 24,
+    create_label(screen, "Up/Down: select | Hold OK: play", 8, 286, 224, 24,
                  0x789B92, LV_TEXT_ALIGN_CENTER);
 }
 
@@ -91,36 +91,45 @@ static void refresh_ui(void)
     char detail[128];
     char slots[360];
     size_t used = 0;
+    slots[0] = 0;
     uint32_t passkey = app_ble_passkey();
     app_firmware_state_t state = app_firmware_state();
 
     if (passkey != UINT32_MAX) {
-        snprintf(status, sizeof(status), "配对码 %06lu", (unsigned long)passkey);
-        snprintf(detail, sizeof(detail), "请在手机上确认相同数字");
+        snprintf(status, sizeof(status), "Pair code %06lu", (unsigned long)passkey);
+        snprintf(detail, sizeof(detail), "Confirm this code on phone");
     } else if (state == APP_FIRMWARE_RECEIVING) {
-        snprintf(status, sizeof(status), "正在写入槽 %u", app_firmware_active_slot() + 1);
-        snprintf(detail, sizeof(detail), "请保持手机靠近并持续供电");
+        snprintf(status, sizeof(status), "Installing play %u", app_firmware_active_slot() + 1);
+        snprintf(detail, sizeof(detail), "Keep phone nearby and power on");
     } else if (s_clear_confirmation) {
-        snprintf(status, sizeof(status), "确认清空槽 %u？", s_cursor_slot + 1);
-        snprintf(detail, sizeof(detail), "短按 OK 确认，其他按键取消");
+        snprintf(status, sizeof(status), "Delete play %u?", s_cursor_slot + 1);
+        snprintf(detail, sizeof(detail), "OK: delete | Other key: cancel");
     } else if (state == APP_FIRMWARE_ERROR) {
-        snprintf(status, sizeof(status), "安装失败");
-        snprintf(detail, sizeof(detail), "错误 0x%lx，可在手机端重试",
+        snprintf(status, sizeof(status), "Operation failed");
+        snprintf(detail, sizeof(detail), "Error 0x%lx. Check phone.",
                  (unsigned long)app_firmware_last_error());
     } else if (app_ble_authenticated()) {
-        snprintf(status, sizeof(status), "安全蓝牙已连接");
-        snprintf(detail, sizeof(detail), "可从手机上传多个兼容玩法");
+        snprintf(status, sizeof(status), "Bluetooth connected");
+        snprintf(detail, sizeof(detail), "Install plays from phone");
     } else if (app_ble_connected()) {
-        snprintf(status, sizeof(status), "蓝牙已连接");
-        snprintf(detail, sizeof(detail), "等待完成安全配对");
+        snprintf(status, sizeof(status), "Pairing");
+        snprintf(detail, sizeof(detail), "Complete secure pairing");
     } else {
-        snprintf(status, sizeof(status), "等待手机连接");
-        snprintf(detail, sizeof(detail), "打开 APK，设备名 PassportNotify");
+        snprintf(status, sizeof(status), "Waiting for phone");
+        snprintf(detail, sizeof(detail), "Open app: PassportNotify");
     }
 
-    for (uint8_t slot = 0; slot < app_firmware_slot_count(); ++slot) {
+    app_firmware_slot_info_t cursor_info;
+    if (!app_firmware_slot_info(s_cursor_slot, &cursor_info) || !cursor_info.present) {
+        uint8_t selected = app_firmware_selected_slot();
+        if (selected < APP_FIRMWARE_MAX_SLOTS) s_cursor_slot = selected;
+    }
+    unsigned shown = 0;
+    for (unsigned step = 0; step < app_firmware_slot_count(); ++step) {
+        uint8_t slot = (s_cursor_slot + step) % APP_FIRMWARE_MAX_SLOTS;
         app_firmware_slot_info_t info;
-        if (!app_firmware_slot_info(slot, &info) || !info.available) continue;
+        if (!app_firmware_slot_info(slot, &info) || !info.present) continue;
+        if (shown++ == 2) break;
         char capacity[16];
         char size[16];
         format_size(capacity, sizeof(capacity), info.capacity);
@@ -128,22 +137,23 @@ static void refresh_ui(void)
         int count;
         if (info.present) {
             count = snprintf(slots + used, sizeof(slots) - used,
-                             "%s 槽%u  %s / %s\n   %s\n",
+                             "%s #%u  %s / %s\n   %s\n",
                              slot == s_cursor_slot ? ">" : " ", slot + 1,
                              size, capacity, info.name);
         } else {
             count = snprintf(slots + used, sizeof(slots) - used,
-                             "%s 槽%u  空 / %s\n",
+                             "%s #%u  Empty / %s\n",
                              slot == s_cursor_slot ? ">" : " ", slot + 1, capacity);
         }
         if (count < 0 || (size_t)count >= sizeof(slots) - used) break;
         used += (size_t)count;
     }
+    if (!shown) used = snprintf(slots, sizeof(slots), "No plays yet.\nInstall from phone.\n");
     char total_free[16];
     char largest[16];
     format_size(total_free, sizeof(total_free), app_firmware_total_free());
     format_size(largest, sizeof(largest), app_firmware_largest_free_slot());
-    snprintf(slots + used, sizeof(slots) - used, "剩余 %s  最大空槽 %s",
+    snprintf(slots + used, sizeof(slots) - used, "Free %s | Largest %s",
              total_free, largest);
 
     lv_label_set_text(s_status_label, status);
@@ -178,11 +188,13 @@ static void on_key(bsp_btn_t button, bsp_btn_ev_t event, void *user)
 
     if (event == BSP_BTN_CLICK && (button == BSP_BTN_UP || button == BSP_BTN_DOWN)) {
         int delta = button == BSP_BTN_UP ? -1 : 1;
-        s_cursor_slot = (uint8_t)((s_cursor_slot + APP_FIRMWARE_MAX_SLOTS + delta) %
-                                  APP_FIRMWARE_MAX_SLOTS);
-        app_firmware_slot_info_t info;
-        if (app_firmware_slot_info(s_cursor_slot, &info) && info.present) {
-            queue_action(ACTION_SELECT, s_cursor_slot);
+        for (unsigned attempt = 0; attempt < APP_FIRMWARE_MAX_SLOTS; ++attempt) {
+            s_cursor_slot = (uint8_t)((s_cursor_slot + APP_FIRMWARE_MAX_SLOTS + delta) % APP_FIRMWARE_MAX_SLOTS);
+            app_firmware_slot_info_t info;
+            if (app_firmware_slot_info(s_cursor_slot, &info) && info.present) {
+                queue_action(ACTION_SELECT, s_cursor_slot);
+                break;
+            }
         }
     } else if (event == BSP_BTN_LONG && button == BSP_BTN_OK) {
         queue_action(ACTION_BOOT, s_cursor_slot);
@@ -221,10 +233,6 @@ static void handle_pending_action(void)
 void app_main(void)
 {
     esp_err_t error = nvs_flash_init();
-    if (error == ESP_ERR_NVS_NO_FREE_PAGES || error == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        error = nvs_flash_init();
-    }
     ESP_ERROR_CHECK(error);
 
     app_firmware_init();

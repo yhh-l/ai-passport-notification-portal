@@ -5,7 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define APP_FIRMWARE_MAX_SLOTS 3
+#include "play_store.h"
+#define APP_FIRMWARE_MAX_SLOTS PLAY_MAX_COUNT
 #define APP_FIRMWARE_NAME_MAX 47
 #define APP_FIRMWARE_AUTO_SLOT UINT8_MAX
 
